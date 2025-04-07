@@ -1123,7 +1123,7 @@ function hexDump(buffer, bytesPerLine = 16) {
 }
 
 // Create HTTP server for status monitoring
-const MONITOR_PORT = 5030;
+const MONITOR_PORT = 8080;
 const monitorServer = http.createServer((req, res) => {
     // Basic CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
