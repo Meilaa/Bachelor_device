@@ -1,19 +1,18 @@
-// Configuration
-const DEVICE_PORT = 8080; // TCP port for TMT250 device connections
-const MONITOR_PORT = 8081; // HTTP port for monitoring
-const BACKEND_API_URL = "http://localhost:3001/api/deviceData";
-const DEBUG_LOG = true; // Set to false in production
-const SOCKET_TIMEOUT = 300000; // 5 minute socket timeout
-const FAILED_MESSAGES_FILE = 'failed-messages.json'; // File for failed backend requests
-const RAW_PACKET_LOG = 'raw-packets.log'; // File to save raw packet data
-const SAVE_RAW_PACKETS = true; // Whether to save raw packets to disk
+require('dotenv').config();
 
-// MongoDB Device ID mapping - Add your TMT250 IMEI here
-const DEVICE_IMEI_MAP = {
-    // Replace with your TMT250's IMEI and corresponding MongoDB ObjectID
-    "353691841005134": "67c09e2317fe16417720d289", // Actual TMT250 IMEI
-    "DEFAULT": "67c09e2317fe16417720d289" // Default placeholder
-};
+// Configuration
+const DEVICE_PORT = parseInt(process.env.DEVICE_PORT); // TCP port for TMT250 device connections
+const MONITOR_PORT = parseInt(process.env.MONITOR_PORT); // HTTP port for monitoring
+const DEBUG_LOG = process.env.DEBUG_LOG === 'true'; // Set to false in production
+const SOCKET_TIMEOUT = parseInt(process.env.SOCKET_TIMEOUT); // 5 minute socket timeout
+
+// MongoDB Configuration
+const MONGODB_URI = process.env.MONGODB_URI ;
+
+// Rate Limiting Configuration
+const MAX_CONNECTIONS = parseInt(process.env.MAX_CONNECTIONS) ;
+const RATE_LIMIT_REQUESTS = parseInt(process.env.RATE_LIMIT_REQUESTS);
+const RATE_LIMIT_WINDOW = parseInt(process.env.RATE_LIMIT_WINDOW);
 
 // TMT250-specific IO Element ID mapping
 const TMT250_IO_ELEMENTS = {
@@ -107,12 +106,11 @@ const TMT250_IO_ELEMENTS = {
 module.exports = {
     DEVICE_PORT,
     MONITOR_PORT,
-    BACKEND_API_URL,
     DEBUG_LOG,
     SOCKET_TIMEOUT,
-    FAILED_MESSAGES_FILE,
-    RAW_PACKET_LOG,
-    SAVE_RAW_PACKETS,
-    DEVICE_IMEI_MAP,
-    TMT250_IO_ELEMENTS
+    MONGODB_URI,
+    TMT250_IO_ELEMENTS,
+    MAX_CONNECTIONS,
+    RATE_LIMIT_REQUESTS,
+    RATE_LIMIT_WINDOW
 }; 

@@ -1,13 +1,50 @@
 const net = require('net');
-const { parseTeltonikaData, sendDataToBackend } = require('./parsers');
-const { saveRawPacket } = require('./utils');
+const { parseTeltonikaData } = require('./parsers');
+const { saveRawPacket, hexDump, isImeiPacket, parseImeiPacket } = require('./utils');
 const { DEVICE_PORT, SOCKET_TIMEOUT, DEBUG_LOG } = require('./config');
+const { connectToDatabase, saveDeviceData } = require('./database');
 
-// Tracking connected devices
-const activeDevices = new Map(); // Maps IMEI to device info
+// Track connected devices
+const activeDevices = new Map(); // Maps deviceId to device info
+
+// Rate limiting configuration
+const RATE_LIMIT = {
+    maxConnections: 100, // Maximum number of concurrent connections
+    maxRequestsPerMinute: 60, // Maximum requests per minute per device
+    requestWindowMs: 60000 // 1 minute window
+};
+
+// Track request counts for rate limiting
+const requestCounts = new Map();
+
+// Function to check if a device is rate limited
+function isRateLimited(deviceId) {
+    const now = Date.now();
+    const deviceRequests = requestCounts.get(deviceId) || [];
+    
+    // Remove old requests outside the time window
+    const recentRequests = deviceRequests.filter(time => now - time < RATE_LIMIT.requestWindowMs);
+    requestCounts.set(deviceId, recentRequests);
+    
+    // Check if device has exceeded rate limit
+    if (recentRequests.length >= RATE_LIMIT.maxRequestsPerMinute) {
+        return true;
+    }
+    
+    // Add current request
+    recentRequests.push(now);
+    return false;
+}
 
 // Create a TCP server to receive data from the device
 const server = net.createServer((socket) => {
+    // Check if we've reached maximum connections
+    if (activeDevices.size >= RATE_LIMIT.maxConnections) {
+        console.log('⚠️ Maximum connections reached, rejecting new connection');
+        socket.end();
+        return;
+    }
+
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`📡 New device connected: ${clientId}`);
     
@@ -15,179 +52,150 @@ const server = net.createServer((socket) => {
     socket.setTimeout(SOCKET_TIMEOUT);
     
     let dataBuffer = Buffer.alloc(0); // Buffer to accumulate data
-    let deviceImei = null;
+    let deviceId = null;
     let lastActivity = Date.now();
     let bytesReceived = 0;
     let packetsProcessed = 0;
     let connectionStartTime = Date.now();
+    let isProcessing = false; // Flag to prevent concurrent processing
 
     socket.on('timeout', () => {
-        console.log(`⏱️ Connection timed out: ${clientId} (IMEI: ${deviceImei || 'unknown'})`);
+        console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
         socket.end();
     });
 
-    socket.on('data', (data) => {
-        lastActivity = Date.now();
-        bytesReceived += data.length;
-        
-        console.log(`📩 Received ${data.length} bytes from ${clientId} (IMEI: ${deviceImei || 'unknown'})`);
-        
-        // Enhanced debugging with hex dump
-        if (DEBUG_LOG) {
-            console.log('📩 Raw Data received:', data.toString('hex'));
-            console.log('📦 Packet structure:');
-            console.log(hexDump(data));
+    socket.on('data', async (data) => {
+        // Prevent concurrent processing of the same device's data
+        if (isProcessing) {
+            console.log(`⚠️ Skipping concurrent data processing for device ${deviceId || 'unknown'}`);
+            return;
         }
-        
-        // Save raw packet data
-        saveRawPacket(data, 'socket-data', deviceImei);
 
-        // Append new data to our buffer
-        dataBuffer = Buffer.concat([dataBuffer, data]);
-        
-        // Process buffer until we've consumed all complete packets
-        processBuffer();
-
-        function processBuffer() {
-            // Check if we have enough data for basic analysis
-            if (dataBuffer.length < 2) return;
+        isProcessing = true;
+        try {
+            lastActivity = Date.now();
+            bytesReceived += data.length;
             
-            // Log for debugging
-            if (DEBUG_LOG) {
-                console.log(`Processing buffer: ${dataBuffer.length} bytes, starting with 0x${dataBuffer.slice(0, Math.min(10, dataBuffer.length)).toString('hex')}`);
-            }
+            console.log(`📩 Received ${data.length} bytes from ${clientId} (Device ID: ${deviceId || 'unknown'})`);
             
-            // Check if this is a login/IMEI packet (according to specification)
-            if (isImeiPacket(dataBuffer)) {
-                deviceImei = parseImeiPacket(dataBuffer);
-                console.log(`📱 Device IMEI: ${deviceImei}`);
-                
-                // Register device in active devices map
-                activeDevices.set(deviceImei, {
-                    socket: socket,
-                    imei: deviceImei,
-                    clientId: clientId,
-                    connectedAt: new Date(),
-                    lastActivity: new Date(),
-                    bytesReceived: bytesReceived,
-                    packetsProcessed: 0
-                });
-                
-                // Send proper acknowledgment to the device (1 byte: 0x01 = accept)
-                const ackBuffer = Buffer.from([0x01]);
-                socket.write(ackBuffer);
-                console.log(`✅ Sent IMEI acknowledgment: ${ackBuffer.toString('hex')}`);
-                
-                // Calculate how many bytes to remove (2 bytes length + IMEI length)
-                const imeiLength = dataBuffer.readUInt16BE(0);
-                dataBuffer = dataBuffer.slice(2 + imeiLength);
-                
-                console.log(`Buffer after IMEI processing: ${dataBuffer.length} bytes`);
-                
-                // Process any remaining data in the buffer
-                if (dataBuffer.length > 0) processBuffer();
-            } 
-            // Check if we have a standard AVL data packet (starts with 00000000 preamble)
-            else if (dataBuffer.length >= 8) {
-                // Check for standard preamble (4 bytes of zeros)
-                const preamble = dataBuffer.readUInt32BE(0);
-                
-                if (preamble !== 0) {
-                    console.warn(`⚠️ Invalid preamble: 0x${preamble.toString(16)}. Expected 0x00000000`);
-                    dataBuffer = dataBuffer.slice(1); // Skip one byte and try again
-                    if (dataBuffer.length > 0) processBuffer();
-                    return;
-                }
-                
-                // Read data field length
-                const dataLength = dataBuffer.readUInt32BE(4);
-                
-                // Validate packet size constraints
-                const totalLength = 8 + dataLength + 4; // preamble + data field length + CRC
-                
-                if (dataLength < 15 || dataLength > 783 * 255) { // Min record size to max possible size
-                    console.warn(`⚠️ Invalid data length: ${dataLength}. Expected 15-${783*255}`);
-                    dataBuffer = dataBuffer.slice(1); // Skip one byte and try again
-                    if (dataBuffer.length > 0) processBuffer();
-                    return;
-                }
-                
-                // Check if we have a complete packet
-                if (dataBuffer.length >= totalLength) {
-                    console.log(`📦 Full data packet received, total length: ${totalLength}, data length: ${dataLength}`);
-                    
-                    // Extract the complete packet
-                    const fullPacket = dataBuffer.slice(0, totalLength);
-                    
-                    // Parse the AVL data
-                    const parsedMessages = parseTeltonikaData(fullPacket, deviceImei);
-                    
-                    if (parsedMessages.length > 0) {
-                        // Send data to backend immediately
-                        sendDataToBackend(parsedMessages, deviceImei);
-                        
-                        // Send acknowledgment with number of correctly received records
-                        const numRecords = parsedMessages.length;
-                        packetsProcessed += numRecords;
+            // Append new data to our buffer
+            dataBuffer = Buffer.concat([dataBuffer, data]);
+            
+            // Process buffer until we've consumed all complete packets
+            await processBuffer();
 
-                        // Update device stats if registered
-                        if (deviceImei && activeDevices.has(deviceImei)) {
-                            const deviceInfo = activeDevices.get(deviceImei);
-                            deviceInfo.lastActivity = new Date();
-                            deviceInfo.bytesReceived = bytesReceived;
-                            deviceInfo.packetsProcessed += numRecords;
-                        }
-
-                        // Acknowledgment is 4 bytes with number of records
-                        const ackBuffer = Buffer.alloc(4);
-                        ackBuffer.writeUInt32BE(numRecords, 0);
-                        socket.write(ackBuffer);
-                        console.log(`✅ Sent data acknowledgment: records=${numRecords}`);
-                    } else {
-                        // Send acknowledgment with 0 records if parsing failed
-                        const ackBuffer = Buffer.alloc(4);
-                        ackBuffer.writeUInt32BE(0, 0);
-                        socket.write(ackBuffer);
-                        console.log(`⚠️ Sent zero-record acknowledgment due to parsing failure`);
-                    }
+            async function processBuffer() {
+                // Check if we have enough data for basic analysis
+                if (dataBuffer.length < 2) return;
+                
+                // Check if this is a login/device ID packet (according to specification)
+                if (isImeiPacket(dataBuffer)) {
+                    deviceId = parseImeiPacket(dataBuffer);
+                    console.log(`📱 Device ID: ${deviceId}`);
                     
-                    // Remove the processed packet from buffer
-                    dataBuffer = dataBuffer.slice(totalLength);
+                    // Register device in active devices map
+                    activeDevices.set(deviceId, {
+                        socket: socket,
+                        deviceId: deviceId,
+                        clientId: clientId,
+                        connectedAt: new Date(),
+                        lastActivity: new Date(),
+                        bytesReceived: bytesReceived,
+                        packetsProcessed: 0
+                    });
+                    
+                    // Send proper acknowledgment to the device (1 byte: 0x01 = accept)
+                    const ackBuffer = Buffer.from([0x01]);
+                    socket.write(ackBuffer);
+                    console.log(`✅ Sent device ID acknowledgment: ${ackBuffer.toString('hex')}`);
+                    
+                    // Calculate how many bytes to remove (2 bytes length + device ID length)
+                    const deviceIdLength = dataBuffer.readUInt16BE(0);
+                    dataBuffer = dataBuffer.slice(2 + deviceIdLength);
                     
                     // Process any remaining data in the buffer
-                    if (dataBuffer.length > 0) processBuffer();
-                } else {
-                    console.log(`⏳ Partial packet received, waiting for more data (${dataBuffer.length}/${totalLength} bytes)`);
+                    if (dataBuffer.length > 0) await processBuffer();
+                } 
+                // Check if we have a standard AVL data packet (starts with 00000000 preamble)
+                else if (dataBuffer.length >= 8) {
+                    // Check for standard preamble (4 bytes of zeros)
+                    const preamble = dataBuffer.readUInt32BE(0);
+                    if (preamble === 0) {
+                        // Check rate limiting
+                        if (deviceId && isRateLimited(deviceId)) {
+                            console.log(`⚠️ Rate limit exceeded for device ${deviceId}`);
+                            // Remove the packet from buffer but don't process it
+                            const dataFieldLength = dataBuffer.readUInt32BE(4);
+                            const totalPacketSize = 8 + dataFieldLength + 4;
+                            dataBuffer = dataBuffer.slice(totalPacketSize);
+                            return;
+                        }
+
+                        // Parse the AVL data
+                        const records = parseTeltonikaData(dataBuffer, deviceId);
+                        
+                        if (records && records.length > 0) {
+                            // Save the records to database
+                            await saveDeviceData(deviceId, records);
+                            
+                            // Send acknowledgment to device (number of records processed)
+                            const ackBuffer = Buffer.from([records.length]);
+                            socket.write(ackBuffer);
+                            console.log(`✅ Sent AVL acknowledgment: ${ackBuffer.toString('hex')}`);
+                            
+                            // Update device stats
+                            packetsProcessed += records.length;
+                            if (activeDevices.has(deviceId)) {
+                                const deviceInfo = activeDevices.get(deviceId);
+                                deviceInfo.packetsProcessed = packetsProcessed;
+                                deviceInfo.lastActivity = new Date();
+                            }
+                        }
+                        
+                        // Remove processed data from buffer
+                        const dataFieldLength = dataBuffer.readUInt32BE(4);
+                        const totalPacketSize = 8 + dataFieldLength + 4; // preamble + length + data + CRC
+                        dataBuffer = dataBuffer.slice(totalPacketSize);
+                        
+                        // Process any remaining data
+                        if (dataBuffer.length > 0) await processBuffer();
+                    } else {
+                        // Invalid preamble, remove first byte and try again
+                        dataBuffer = dataBuffer.slice(1);
+                        await processBuffer();
+                    }
                 }
-            } else {
-                // Not enough data to determine packet type
-                console.log(`⏳ Waiting for more data, current buffer: ${dataBuffer.length} bytes`);
             }
+        } catch (error) {
+            console.error(`❌ Error processing data for device ${deviceId || 'unknown'}:`, error);
+        } finally {
+            isProcessing = false;
         }
     });
 
-    socket.on('close', (hadError) => {
-        const duration = Math.round((Date.now() - connectionStartTime) / 1000);
-        console.log(`🔌 Device ${deviceImei || 'unknown'} disconnected${hadError ? ' due to error' : ''}`);
-        console.log(`📊 Connection stats: duration=${duration}s, bytes=${bytesReceived}, packets=${packetsProcessed}`);
-        
-        // Remove device from active devices map
-        if (deviceImei && activeDevices.has(deviceImei)) {
-            activeDevices.delete(deviceImei);
-            console.log(`📝 Removed device ${deviceImei} from active devices. Current count: ${activeDevices.size}`);
-        }
+    socket.on('error', (error) => {
+        console.error(`❌ Socket error for ${clientId} (Device ID: ${deviceId || 'unknown'}):`, error);
     });
-    
-    socket.on('error', (err) => {
-        console.error(`❌ Socket error for device ${deviceImei || 'unknown'}: ${err.message}`);
+
+    socket.on('close', () => {
+        console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+        if (deviceId) {
+            activeDevices.delete(deviceId);
+            requestCounts.delete(deviceId);
+        }
     });
 });
 
 // Start the device server
 function startDeviceServer() {
-    server.listen(DEVICE_PORT, () => {
-        console.log(`🚀 TMT250 device server listening on port ${DEVICE_PORT}`);
-        console.log(`Ready to receive connections from Teltonika TMT250 devices`);
+    // Connect to MongoDB first
+    connectToDatabase().then(() => {
+        server.listen(DEVICE_PORT, () => {
+            console.log(`📡 Device server listening on port ${DEVICE_PORT}`);
+        });
+    }).catch(error => {
+        console.error('❌ Failed to start device server:', error);
+        process.exit(1);
     });
 }
 
