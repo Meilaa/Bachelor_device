@@ -21,11 +21,6 @@ async function initializeServers() {
         await startDeviceServer();
         console.log('✅ Device server started');
 
-        // Start monitoring server
-        app.listen(MONITORING_PORT, () => {
-            console.log(`📊 Monitoring server listening on port ${MONITORING_PORT}`);
-        });
-
         // Handle server closing
         const shutdownHandler = () => {
             console.log('🛑 Shutting down servers...');
