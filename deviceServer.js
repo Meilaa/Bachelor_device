@@ -167,6 +167,34 @@ const server = net.createServer((socket) => {
         console.log(`📦 Current buffer length: ${dataBuffer.length} bytes`);
         console.log(`📦 Buffer content (hex): ${dataBuffer.toString('hex')}`);
         
+        // Check if this is an HTTP request
+        const isHttpRequest = dataBuffer.toString().startsWith('GET') || 
+                            dataBuffer.toString().startsWith('POST') ||
+                            dataBuffer.toString().startsWith('PUT') ||
+                            dataBuffer.toString().startsWith('DELETE');
+        
+        if (isHttpRequest) {
+            console.log('⚠️ Received HTTP request instead of device data');
+            console.log('📦 HTTP request:', dataBuffer.toString());
+            
+            // Send HTTP 400 Bad Request response
+            const httpResponse = 'HTTP/1.1 400 Bad Request\r\n' +
+                               'Content-Type: text/plain\r\n' +
+                               'Connection: close\r\n' +
+                               '\r\n' +
+                               'This server expects Teltonika protocol data, not HTTP requests.';
+            
+            socket.write(httpResponse, (err) => {
+                if (err) {
+                    console.error('❌ Error sending HTTP response:', err);
+                } else {
+                    console.log('📤 Sent HTTP 400 response');
+                }
+                socket.end();
+            });
+            return;
+        }
+        
         // Check if this is a login/device ID packet (according to specification)
         if (!isImeiProcessed && isImeiPacket(dataBuffer)) {
             try {
@@ -312,8 +340,8 @@ const server = net.createServer((socket) => {
 function startDeviceServer() {
     // Connect to MongoDB first
     connectToDatabase().then(() => {
-        server.listen(DEVICE_PORT, () => {
-            console.log(`📡 Device server listening on port ${DEVICE_PORT}`);
+        server.listen(DEVICE_PORT, '0.0.0.0', () => {
+            console.log(`📡 Device server listening on all interfaces (0.0.0.0:${DEVICE_PORT})`);
         });
     }).catch(error => {
         console.error('❌ Failed to start device server:', error);
