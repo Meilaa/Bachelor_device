@@ -4,7 +4,6 @@ const { parseTeltonikaData } = require('./parsers');
 
 // Configuration
 const DEVICE_PORT = 8080;
-const SOCKET_TIMEOUT = 300000;
 const DEBUG_LOG = true;
 
 // Track active devices
@@ -15,11 +14,26 @@ const server = net.createServer((socket) => {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`📡 New device connected: ${clientId}`);
     
-    socket.setTimeout(SOCKET_TIMEOUT);
+    // Configure TCP keep-alive (critical for cloud environments)
+    socket.setKeepAlive(true, 60000); // Send keep-alive after 60s idle
+    
+    // Reduce timeout to match cloud provider limits
+    socket.setTimeout(15000); // 15s instead of 300s
+    
+    // Enable TCP_NODELAY to prevent buffering delays
+    socket.setNoDelay(true);
     
     let dataBuffer = Buffer.alloc(0);
     let deviceImei = null;
     let lastActivity = Date.now();
+
+    // Add heartbeat detection
+    const heartbeatInterval = setInterval(() => {
+        if (Date.now() - lastActivity > 30000) {
+            console.log(`❤️‍🩹 No activity for 30s, closing ${clientId}`);
+            socket.end();
+        }
+    }, 10000);
 
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (IMEI: ${deviceImei || 'unknown'})`);
@@ -31,6 +45,12 @@ const server = net.createServer((socket) => {
         
         if (DEBUG_LOG) {
             console.log(`📩 Received ${data.length} bytes from ${clientId}`);
+        }
+        
+        // Handle partial IMEI packets
+        if (!deviceImei && dataBuffer.length + data.length < 17) {
+            dataBuffer = Buffer.concat([dataBuffer, data]);
+            return;
         }
         
         dataBuffer = Buffer.concat([dataBuffer, data]);
@@ -51,6 +71,7 @@ const server = net.createServer((socket) => {
                 console.warn(`⚠️ Unknown device: ${deviceImei}`);
                 deviceImei = 'unknown';
             } else {
+                // Update or add device to active devices
                 activeDevices.set(deviceImei, {
                     socket,
                     imei: deviceImei,
@@ -58,6 +79,7 @@ const server = net.createServer((socket) => {
                     connectedAt: new Date(),
                     lastActivity: new Date()
                 });
+                console.log(`✅ Device ${deviceImei} registered and active`);
             }
             
             // Send acknowledgment
@@ -68,7 +90,7 @@ const server = net.createServer((socket) => {
             dataBuffer = dataBuffer.slice(2 + imeiLength);
             
             if (dataBuffer.length > 0) processBuffer();
-        } 
+        }
         // Check for data packet
         else if (dataBuffer.length >= 8) {
             const preamble = dataBuffer.readUInt32BE(0);
@@ -86,17 +108,17 @@ const server = net.createServer((socket) => {
                 const records = parseTeltonikaData(fullPacket, deviceImei);
                 
                 if (records.length > 0) {
-                    console.log(`📊 Processing ${records.length} records from device ${deviceImei}`);
-                    console.log('Sample record:', JSON.stringify(records[0], null, 2));
+                    if (DEBUG_LOG) {
+                        console.log(`📊 Processing ${records.length} records from device ${deviceImei}`);
+                    }
                     
                     try {
-                        // Save data to database
-                        console.log('Attempting to save records to database...');
                         await saveDeviceData(deviceImei, records);
-                        console.log(`✅ Successfully saved ${records.length} records for device ${deviceImei}`);
+                        if (DEBUG_LOG) {
+                            console.log(`✅ Successfully saved ${records.length} records for device ${deviceImei}`);
+                        }
                     } catch (error) {
                         console.error(`❌ Failed to save records for device ${deviceImei}:`, error);
-                        console.error('Error details:', error.stack);
                     }
                     
                     // Send acknowledgment
@@ -112,6 +134,7 @@ const server = net.createServer((socket) => {
     }
 
     socket.on('close', () => {
+        clearInterval(heartbeatInterval);
         console.log(`🔌 Device ${deviceImei || 'unknown'} disconnected`);
         if (deviceImei && activeDevices.has(deviceImei)) {
             activeDevices.delete(deviceImei);
