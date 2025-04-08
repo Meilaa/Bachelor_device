@@ -52,6 +52,14 @@ const server = net.createServer((socket) => {
     socket.setKeepAlive(true, 60000); // Enable keepalive with 60 second interval
     socket.setNoDelay(true); // Disable Nagle's algorithm for faster response
     
+    // Force socket settings to be applied
+    socket.on('connect', () => {
+        console.log('🔌 Socket connected, applying settings...');
+        socket.setKeepAlive(true, 60000);
+        socket.setNoDelay(true);
+        socket.setTimeout(SOCKET_TIMEOUT);
+    });
+    
     let dataBuffer = Buffer.alloc(0); // Buffer to accumulate data
     let deviceId = null;
     let lastActivity = Date.now();
@@ -73,11 +81,19 @@ const server = net.createServer((socket) => {
         noDelay: socket.noDelay
     });
 
+    // Send initial acknowledgment to keep connection alive
+    const initialAck = Buffer.from([0x01]);
+    socket.write(initialAck);
+    console.log('📤 Sent initial acknowledgment to device');
+
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
         console.log('⚠️ Socket timeout detected, but keeping connection alive');
         // Reset the timeout timer
         socket.setTimeout(SOCKET_TIMEOUT);
+        // Send keepalive packet
+        socket.write(initialAck);
+        console.log('📤 Sent keepalive acknowledgment');
     });
 
     socket.on('data', async (data) => {
