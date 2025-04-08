@@ -62,13 +62,18 @@ const server = net.createServer((socket) => {
     let deviceImei = null;
     let lastActivity = Date.now();
 
-    // Protocol validation for empty health checks
+    // Protocol validation for HTTP requests
     socket.once('data', (data) => {
-        if (data.length === 0) {
-            console.log('🕵️‍♂️ Empty health check detected from', clientId);
-            socket.end();
+        // Check for HTTP request
+        const firstLine = data.toString().split('\n')[0];
+        if (firstLine.startsWith('GET') || firstLine.startsWith('POST') || firstLine.startsWith('HEAD')) {
+            // Silently close HTTP connections without logging
+            socket.destroy();
             return;
         }
+        
+        // Process as device data
+        socket.emit('data', data);
     });
 
     socket.on('timeout', () => {
@@ -96,21 +101,11 @@ const server = net.createServer((socket) => {
             lastActivity = Date.now();
             rawData.push(data);
             
-            console.log(`\n📩 Received data from ${clientId}:`);
-            console.log(`   - Data length: ${data.length} bytes`);
-            console.log(`   - Raw hex: ${data.toString('hex')}`);
-            console.log(`   - Raw ascii: ${data.toString('ascii')}`);
-            console.log(`   - Current buffer size: ${dataBuffer.length} bytes`);
-            
-            // Log suspicious data patterns
-            if (data.length > 0) {
-                const logMessage = `[${new Date().toISOString()}] 📦 Data received from ${clientId}\n` +
-                    `   - Length: ${data.length} bytes\n` +
-                    `   - Hex: ${data.toString('hex')}\n` +
-                    `   - ASCII: ${data.toString('ascii')}\n` +
-                    `   - Recent attempts: ${recentAttempts.length}\n\n`;
-                
-                fs.appendFileSync(suspiciousLogFile, logMessage);
+            // Only log device data, not HTTP requests
+            if (DEBUG_LOG) {
+                console.log(`\n📩 Received device data from ${clientId}:`);
+                console.log(`   - Data length: ${data.length} bytes`);
+                console.log(`   - Raw hex: ${data.toString('hex')}`);
             }
             
             // Check if this looks like a Teltonika IMEI packet
