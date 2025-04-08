@@ -4,7 +4,8 @@ require('dotenv').config();
 const DEVICE_PORT = parseInt(process.env.DEVICE_PORT) || 8080; // TCP port for TMT250 device connections
 const MONITOR_PORT = parseInt(process.env.MONITOR_PORT) || 8081; // HTTP port for monitoring
 const DEBUG_LOG = process.env.DEBUG_LOG === 'true'; // Set to false in production
-const SOCKET_TIMEOUT = parseInt(process.env.SOCKET_TIMEOUT) || 300000; // 5 minute socket timeout
+const SOCKET_TIMEOUT = parseInt(process.env.SOCKET_TIMEOUT) || 15000; // Reduced from 300000
+const KEEPALIVE_INTERVAL = parseInt(process.env.KEEPALIVE_INTERVAL) || 45000; // Add this
 const RAW_PACKET_LOG = process.env.RAW_PACKET_LOG || 'raw-packets.log'; // File to save raw packet data
 const SAVE_RAW_PACKETS = process.env.SAVE_RAW_PACKETS === 'true'; // Whether to save raw packets to disk
 

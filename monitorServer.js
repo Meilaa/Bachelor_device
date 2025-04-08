@@ -59,7 +59,17 @@ function startMonitorServer(activeDevices) {
         process.exit(1);
     }
 }
-
+// Add to your monitoring endpoints
+monitorServer.get('/connections', (req, res) => {
+    const connections = server.getConnections((err, count) => {
+        res.json({
+            activeConnections: count,
+            timestamp: new Date().toISOString(),
+            connectionIssues: Array.from(activeDevices.values())
+                .filter(d => Date.now() - d.lastActivity > 30000)
+        });
+    });
+});
 module.exports = {
     monitorServer,
     startMonitorServer
