@@ -21,6 +21,12 @@ const server = net.createServer((socket) => {
     let deviceImei = null;
     let lastActivity = Date.now();
 
+    // Timeout if the device doesn't send data within 1 minute
+    let timeoutHandler = setTimeout(() => {
+        console.log(`⏱️ No data received from ${clientId}, closing connection`);
+        socket.end();
+    }, 60000);  // 60 seconds timeout
+
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (IMEI: ${deviceImei || 'unknown'})`);
         socket.end();
@@ -28,6 +34,9 @@ const server = net.createServer((socket) => {
 
     socket.on('data', async (data) => {
         lastActivity = Date.now();
+        
+        // Clear the timeout handler if data is received
+        clearTimeout(timeoutHandler);
 
         if (DEBUG_LOG) {
             console.log(`📩 Received ${data.length} bytes from ${clientId}`);
@@ -35,6 +44,12 @@ const server = net.createServer((socket) => {
 
         dataBuffer = Buffer.concat([dataBuffer, data]);
         await processBuffer();
+
+        // Reset the timeout handler since data is now being received
+        timeoutHandler = setTimeout(() => {
+            console.log(`⏱️ No data received from ${clientId}, closing connection`);
+            socket.end();
+        }, 60000);  // 60 seconds timeout
     });
 
     async function processBuffer() {
