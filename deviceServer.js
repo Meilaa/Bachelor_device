@@ -45,23 +45,27 @@ const server = net.createServer((socket) => {
             deviceImei = parseImeiPacket(dataBuffer);
             console.log(`📱 Device IMEI: ${deviceImei}`);
             
+
             // Check if device exists in database
             const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
             if (!deviceInfo) {
-                console.warn(`⚠️ Unknown device: ${deviceImei}`);
-                deviceImei = 'unknown';
-            } else {
-                activeDevices.set(deviceImei, {
-                    socket,
-                    imei: deviceImei,
-                    clientId,
-                    connectedAt: new Date(),
-                    lastActivity: new Date()
-                });
+                console.warn(`⚠️ Unknown device: ${deviceImei}. Closing connection.`);
+                socket.end(); // <--- End connection if not known
+                return;
             }
-            
-            // Send acknowledgment
+
+            // Register device in activeDevices
+            activeDevices.set(deviceImei, {
+                socket,
+                imei: deviceImei,
+                clientId,
+                connectedAt: new Date(),
+                lastActivity: new Date()
+            });
+
+            // Only ACK if valid device
             socket.write(Buffer.from([0x01]));
+
             
             // Remove processed IMEI data
             const imeiLength = dataBuffer.readUInt16BE(0);
