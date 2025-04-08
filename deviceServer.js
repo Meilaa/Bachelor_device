@@ -1,139 +1,165 @@
 const net = require('net');
+const { getDeviceInfoByDeviceId, saveDeviceData } = require('./database');
 const { parseTeltonikaData } = require('./parsers');
-const { isImeiPacket, parseImeiPacket } = require('./utils');
-const { DEVICE_PORT, SOCKET_TIMEOUT } = require('./config');
-const { connectToDatabase, saveDeviceData, getDeviceInfoByDeviceId } = require('./database');
 
-// Track connected devices
+// Configuration
+const DEVICE_PORT = 8080;
+const SOCKET_TIMEOUT = 300000;
+const DEBUG_LOG = true;
+
+// Track active devices
 const activeDevices = new Map();
 
-// Create a TCP server to receive data from the device
+// Create TCP server
 const server = net.createServer((socket) => {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`📡 New device connected: ${clientId}`);
     
-    // Configure socket with longer timeout and keep-alive
-    socket.setTimeout(300000); // 5 minutes timeout
-    socket.setKeepAlive(true, 60000); // Enable keep-alive every 60 seconds
+    socket.setTimeout(SOCKET_TIMEOUT);
     
     let dataBuffer = Buffer.alloc(0);
-    let deviceId = null;
-    let isProcessing = false;
-    let isImeiProcessed = false;
-    let lastDataTime = Date.now();
+    let deviceImei = null;
+    let lastActivity = Date.now();
 
     socket.on('timeout', () => {
-        const timeSinceLastData = Date.now() - lastDataTime;
-        if (timeSinceLastData > 300000) { // 5 minutes without data
-            console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-            socket.end();
-        } else {
-            // Reset timeout if we've received data recently
-            socket.setTimeout(300000);
-        }
+        console.log(`⏱️ Connection timed out: ${clientId} (IMEI: ${deviceImei || 'unknown'})`);
+        socket.end();
     });
 
-    // Function to process the data buffer
-    async function processBuffer() {
-        if (isProcessing) return;
-        isProcessing = true;
-
-        try {
-            if (dataBuffer.length < 2) return;
-            
-            if (!isImeiProcessed && isImeiPacket(dataBuffer)) {
-                try {
-                    deviceId = parseImeiPacket(dataBuffer);
-                    console.log(`📱 Device ID: ${deviceId}`);
-                    
-                    const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
-                    if (!deviceInfo) {
-                        console.log(`⚠️ Device ${deviceId} not found in database`);
-                        deviceId = 'unknown';
-                    } else {
-                        console.log(`✅ Device ${deviceId} found in database`);
-                        activeDevices.set(deviceId, {
-                            socket: socket,
-                            deviceId: deviceId,
-                            clientId: clientId,
-                            connectedAt: new Date()
-                        });
-                    }
-                    
-                    const ackBuffer = Buffer.from([0x01]);
-                    socket.write(ackBuffer);
-                    
-                    const deviceIdLength = dataBuffer.readUInt16BE(0);
-                    dataBuffer = dataBuffer.slice(2 + deviceIdLength);
-                    isImeiProcessed = true;
-                    
-                    if (dataBuffer.length > 0) await processBuffer();
-                } catch (error) {
-                    console.error('❌ Error processing IMEI packet:', error);
-                }
-            } else if (isImeiProcessed && deviceId !== 'unknown') {
-                try {
-                    const records = parseTeltonikaData(dataBuffer, deviceId);
-                    if (records && records.length > 0) {
-                        await saveDeviceData(deviceId, records);
-                        console.log(`📊 Received ${records.length} records from device ${deviceId}`);
-                        
-                        const bytesPerRecord = 45;
-                        const bytesProcessed = records.length * bytesPerRecord;
-                        dataBuffer = dataBuffer.slice(bytesProcessed);
-                        lastDataTime = Date.now();
-                    }
-                } catch (error) {
-                    console.error(`❌ Error processing data for device ${deviceId}:`, error);
-                }
-            }
-        } catch (error) {
-            console.error('❌ Error processing data:', error);
-        } finally {
-            isProcessing = false;
-        }
-    }
-
     socket.on('data', async (data) => {
+        lastActivity = Date.now();
+        
+        if (DEBUG_LOG) {
+            console.log(`📩 Received ${data.length} bytes from ${clientId}`);
+        }
+        
         dataBuffer = Buffer.concat([dataBuffer, data]);
         await processBuffer();
     });
 
-    socket.on('error', (error) => {
-        console.error(`❌ Socket error for ${clientId}:`, error);
-    });
+    async function processBuffer() {
+        if (dataBuffer.length < 2) return;
+        
+        // Check for IMEI packet
+        if (isImeiPacket(dataBuffer)) {
+            deviceImei = parseImeiPacket(dataBuffer);
+            console.log(`📱 Device IMEI: ${deviceImei}`);
+            
+            // Check if device exists in database
+            const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
+            if (!deviceInfo) {
+                console.warn(`⚠️ Unknown device: ${deviceImei}`);
+                deviceImei = 'unknown';
+            } else {
+                activeDevices.set(deviceImei, {
+                    socket,
+                    imei: deviceImei,
+                    clientId,
+                    connectedAt: new Date(),
+                    lastActivity: new Date()
+                });
+            }
+            
+            // Send acknowledgment
+            socket.write(Buffer.from([0x01]));
+            
+            // Remove processed IMEI data
+            const imeiLength = dataBuffer.readUInt16BE(0);
+            dataBuffer = dataBuffer.slice(2 + imeiLength);
+            
+            if (dataBuffer.length > 0) processBuffer();
+        } 
+        // Check for data packet
+        else if (dataBuffer.length >= 8) {
+            const preamble = dataBuffer.readUInt32BE(0);
+            if (preamble !== 0) {
+                dataBuffer = dataBuffer.slice(1);
+                if (dataBuffer.length > 0) processBuffer();
+                return;
+            }
+            
+            const dataLength = dataBuffer.readUInt32BE(4);
+            const totalLength = 8 + dataLength + 4;
+            
+            if (dataBuffer.length >= totalLength) {
+                const fullPacket = dataBuffer.slice(0, totalLength);
+                const records = parseTeltonikaData(fullPacket, deviceImei);
+                
+                if (records.length > 0) {
+                    console.log(`📊 Processing ${records.length} records from device ${deviceImei}`);
+                    console.log('Sample record:', JSON.stringify(records[0], null, 2));
+                    
+                    try {
+                        // Save data to database
+                        console.log('Attempting to save records to database...');
+                        await saveDeviceData(deviceImei, records);
+                        console.log(`✅ Successfully saved ${records.length} records for device ${deviceImei}`);
+                    } catch (error) {
+                        console.error(`❌ Failed to save records for device ${deviceImei}:`, error);
+                        console.error('Error details:', error.stack);
+                    }
+                    
+                    // Send acknowledgment
+                    const ackBuffer = Buffer.alloc(4);
+                    ackBuffer.writeUInt32BE(records.length, 0);
+                    socket.write(ackBuffer);
+                }
+                
+                dataBuffer = dataBuffer.slice(totalLength);
+                if (dataBuffer.length > 0) processBuffer();
+            }
+        }
+    }
 
     socket.on('close', () => {
-        console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-        if (deviceId) {
-            activeDevices.delete(deviceId);
+        console.log(`🔌 Device ${deviceImei || 'unknown'} disconnected`);
+        if (deviceImei && activeDevices.has(deviceImei)) {
+            activeDevices.delete(deviceImei);
         }
+    });
+    
+    socket.on('error', (err) => {
+        console.error(`❌ Socket error for device ${deviceImei || 'unknown'}: ${err.message}`);
     });
 });
 
-// Function to start the device server
-async function startDeviceServer() {
-    try {
-        await connectToDatabase();
-        console.log('✅ Database connection established');
+// Helper functions
+function isImeiPacket(buffer) {
+    if (buffer.length < 4) return false;
+    
+    const imeiLength = buffer.readUInt16BE(0);
+    if (imeiLength < 15 || imeiLength > 17 || buffer.length < imeiLength + 2) {
+        return false;
+    }
+    
+    for (let i = 2; i < 2 + imeiLength; i++) {
+        if (i >= buffer.length) return false;
+        const char = buffer[i];
+        if (char < 0x30 || char > 0x39) return false;
+    }
+    return true;
+}
 
-        return new Promise((resolve, reject) => {
-            server.listen(DEVICE_PORT, () => {
-                console.log(`📡 Device server listening on port ${DEVICE_PORT}`);
-                resolve(server);
-            }).on('error', (err) => {
-                console.error('❌ Server initialization error:', err);
-                reject(err);
-            });
+function parseImeiPacket(buffer) {
+    const imeiLength = buffer.readUInt16BE(0);
+    return buffer.toString('ascii', 2, 2 + imeiLength);
+}
+
+// Start server
+async function startServer() {
+    try {
+        server.listen(DEVICE_PORT, () => {
+            console.log(`🚀 Device server listening on port ${DEVICE_PORT}`);
         });
     } catch (error) {
-        console.error('❌ Failed to start device server:', error);
-        throw error;
+        console.error('Failed to start server:', error);
+        process.exit(1);
     }
 }
 
 module.exports = {
+    startServer,
+    startDeviceServer: startServer,
     server,
-    startDeviceServer,
     activeDevices
 };

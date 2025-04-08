@@ -58,7 +58,10 @@ function parseTeltonikaData(buffer, deviceImei) {
                 // Create a record object
                 const record = {
                     deviceImei: deviceImei,
-                    timestamp: 0,
+                    deviceId: deviceImei, // Add for database compatibility
+                    userId: null, // Will be populated by database
+                    animalId: null, // Will be populated by database
+                    timestamp: new Date(Number(buffer.readBigUInt64BE(index))), // Convert to Date object
                     latitude: 0,
                     longitude: 0,
                     altitude: 0,
@@ -67,7 +70,16 @@ function parseTeltonikaData(buffer, deviceImei) {
                     speed: 0,
                     priority: 0,
                     eventIOID: 0,
-                    elements: {}
+                    elements: {},
+                    // Add default values for database fields
+                    gnssStatus: false,
+                    movement: false,
+                    charging: false,
+                    gsmSignal: 0,
+                    batteryLevel: 0,
+                    batteryVoltage: 0,
+                    gnssPDOP: 0,
+                    gnssHDOP: 0
                 };
                 
                 // Timestamp
