@@ -10,7 +10,22 @@ monitorServer.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal server error' });
 });
 
-// Health check endpoint
+// Health check endpoint for Kubernetes
+monitorServer.get('/healthz', (req, res) => {
+    try {
+        res.status(200).json({
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+            devicePort: DEVICE_PORT,
+            monitorPort: MONITOR_PORT
+        });
+    } catch (error) {
+        console.error('❌ Health check error:', error);
+        res.status(500).json({ error: 'Health check failed' });
+    }
+});
+
+// Original health check endpoint (kept for backward compatibility)
 monitorServer.get('/health', (req, res) => {
     try {
         res.json({
