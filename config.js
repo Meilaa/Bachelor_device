@@ -2,7 +2,6 @@ require('dotenv').config();
 
 // Configuration
 const DEVICE_PORT = parseInt(process.env.DEVICE_PORT) || 8080; // TCP port for TMT250 device connections
-const MONITOR_PORT = parseInt(process.env.MONITOR_PORT) || 8081; // HTTP port for monitoring
 const DEBUG_LOG = process.env.DEBUG_LOG === 'true'; // Set to false in production
 const SOCKET_TIMEOUT = parseInt(process.env.SOCKET_TIMEOUT) || 15000; // Reduced from 300000
 const KEEPALIVE_INTERVAL = parseInt(process.env.KEEPALIVE_INTERVAL) || 45000; // Add this
@@ -10,7 +9,7 @@ const RAW_PACKET_LOG = process.env.RAW_PACKET_LOG || 'raw-packets.log'; // File 
 const SAVE_RAW_PACKETS = process.env.SAVE_RAW_PACKETS === 'true'; // Whether to save raw packets to disk
 
 // MongoDB Configuration
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/device_monitoring';
+const MONGODB_URI = process.env.MONGODB_URI;
 
 // Rate Limiting Configuration
 const MAX_CONNECTIONS = parseInt(process.env.MAX_CONNECTIONS) || 100;
@@ -108,7 +107,6 @@ const TMT250_IO_ELEMENTS = {
 
 module.exports = {
     DEVICE_PORT,
-    MONITOR_PORT,
     DEBUG_LOG,
     SOCKET_TIMEOUT,
     RAW_PACKET_LOG,
