@@ -1,20 +1,50 @@
 const net = require('net');
 const { getDeviceInfoByDeviceId, saveDeviceData } = require('./database');
 const { parseTeltonikaData } = require('./parsers');
+const fs = require('fs');
+const path = require('path');
 
 // Configuration
 const DEVICE_PORT = 8080;
 const DEBUG_LOG = true;
 
-// Track active devices
+// Track active devices and connection attempts
 const activeDevices = new Map();
+const connectionAttempts = new Map();
+const connectionMap = new Map(); // Track all connection attempts
+const MAX_ATTEMPTS_PER_MINUTE = 5; // Maximum connection attempts per minute per IP
+
+// Create suspicious connections log file
+const suspiciousLogFile = path.join(__dirname, 'suspicious_connections.log');
 
 // Create TCP server
 const server = net.createServer((socket) => {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+    const ipAddress = socket.remoteAddress;
     let connectionStartTime = Date.now();
     let hasReceivedData = false;
-    let connectionAttempts = 0;
+    let rawData = [];
+    
+    // Track connection attempt
+    const now = new Date();
+    connectionMap.set(clientId, now);
+    console.log(`🔍 Connection #${connectionMap.size} from ${clientId} at ${now.toISOString()}`);
+    
+    // Check connection rate limiting
+    const attempts = connectionAttempts.get(ipAddress) || [];
+    const recentAttempts = attempts.filter(time => now - time < 60000); // Last minute
+    
+    if (recentAttempts.length >= MAX_ATTEMPTS_PER_MINUTE) {
+        const logMessage = `[${new Date().toISOString()}] 🚫 Rate limit exceeded for ${ipAddress} - ${recentAttempts.length} attempts in last minute\n`;
+        fs.appendFileSync(suspiciousLogFile, logMessage);
+        console.log(`🚫 Rate limit exceeded for ${ipAddress} - ${recentAttempts.length} attempts in last minute`);
+        socket.destroy();
+        return;
+    }
+    
+    // Record this attempt
+    attempts.push(now);
+    connectionAttempts.set(ipAddress, attempts);
     
     // Immediately set a very short timeout for initial connection
     socket.setTimeout(5000); // 5 seconds to receive IMEI
@@ -26,18 +56,37 @@ const server = net.createServer((socket) => {
     console.log(`   - Local Address: ${socket.localAddress}`);
     console.log(`   - Local Port: ${socket.localPort}`);
     console.log(`   - Timeout: 5s`);
+    console.log(`   - Recent attempts: ${recentAttempts.length}`);
     
     let dataBuffer = Buffer.alloc(0);
     let deviceImei = null;
     let lastActivity = Date.now();
 
+    // Protocol validation for empty health checks
+    socket.once('data', (data) => {
+        if (data.length === 0) {
+            console.log('🕵️‍♂️ Empty health check detected from', clientId);
+            socket.end();
+            return;
+        }
+    });
+
     socket.on('timeout', () => {
+        const logMessage = `[${new Date().toISOString()}] ⏱️ Connection timeout for ${clientId}\n` +
+            `   - Duration: ${(Date.now() - connectionStartTime) / 1000}s\n` +
+            `   - Data received: ${hasReceivedData ? 'Yes' : 'No'}\n` +
+            `   - Raw data: ${rawData.map(d => d.toString('hex')).join(' ')}\n` +
+            `   - Recent attempts: ${recentAttempts.length}\n\n`;
+        
+        fs.appendFileSync(suspiciousLogFile, logMessage);
+        
         console.log(`\n⏱️ Initial connection timeout for ${clientId} - no IMEI received`);
         console.log(`📊 Connection stats at timeout:`);
         console.log(`   - Duration: ${(Date.now() - connectionStartTime) / 1000}s`);
         console.log(`   - Data received: ${hasReceivedData ? 'Yes' : 'No'}`);
         console.log(`   - Buffer size: ${dataBuffer.length} bytes`);
         console.log(`   - IMEI: ${deviceImei || 'Not identified'}`);
+        console.log(`   - Raw data received: ${rawData.map(d => d.toString('hex')).join(' ')}`);
         socket.destroy();
     });
 
@@ -45,12 +94,24 @@ const server = net.createServer((socket) => {
         try {
             hasReceivedData = true;
             lastActivity = Date.now();
+            rawData.push(data);
             
             console.log(`\n📩 Received data from ${clientId}:`);
             console.log(`   - Data length: ${data.length} bytes`);
             console.log(`   - Raw hex: ${data.toString('hex')}`);
             console.log(`   - Raw ascii: ${data.toString('ascii')}`);
             console.log(`   - Current buffer size: ${dataBuffer.length} bytes`);
+            
+            // Log suspicious data patterns
+            if (data.length > 0) {
+                const logMessage = `[${new Date().toISOString()}] 📦 Data received from ${clientId}\n` +
+                    `   - Length: ${data.length} bytes\n` +
+                    `   - Hex: ${data.toString('hex')}\n` +
+                    `   - ASCII: ${data.toString('ascii')}\n` +
+                    `   - Recent attempts: ${recentAttempts.length}\n\n`;
+                
+                fs.appendFileSync(suspiciousLogFile, logMessage);
+            }
             
             // Check if this looks like a Teltonika IMEI packet
             if (data.length >= 2) {
@@ -60,6 +121,12 @@ const server = net.createServer((socket) => {
                 console.log(`   - Valid range: 15-17`);
                 
                 if (potentialImeiLength < 15 || potentialImeiLength > 17) {
+                    const logMessage = `[${new Date().toISOString()}] ⚠️ Invalid IMEI length from ${clientId}\n` +
+                        `   - Length: ${potentialImeiLength}\n` +
+                        `   - Data: ${data.toString('hex')}\n\n`;
+                    
+                    fs.appendFileSync(suspiciousLogFile, logMessage);
+                    
                     console.log(`⚠️ Invalid IMEI length (${potentialImeiLength}) from ${clientId} - closing connection`);
                     socket.destroy();
                     return;
@@ -84,6 +151,13 @@ const server = net.createServer((socket) => {
                         // Check if device exists in database
                         const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
                         if (!deviceInfo) {
+                            const logMessage = `[${new Date().toISOString()}] ⚠️ Unknown device attempted connection\n` +
+                                `   - IMEI: ${deviceImei}\n` +
+                                `   - IP: ${ipAddress}\n` +
+                                `   - Port: ${socket.remotePort}\n\n`;
+                            
+                            fs.appendFileSync(suspiciousLogFile, logMessage);
+                            
                             console.log(`⚠️ Unknown device: ${deviceImei}`);
                             console.log(`   - Not found in database`);
                             socket.destroy();
@@ -123,6 +197,12 @@ const server = net.createServer((socket) => {
                         console.log(`📦 Remaining buffer: ${dataBuffer.length} bytes`);
                         if (dataBuffer.length > 0) await processBuffer();
                     } else {
+                        const logMessage = `[${new Date().toISOString()}] ⚠️ Invalid IMEI format from ${clientId}\n` +
+                            `   - Data: ${dataBuffer.toString('hex')}\n` +
+                            `   - ASCII: ${dataBuffer.toString('ascii')}\n\n`;
+                        
+                        fs.appendFileSync(suspiciousLogFile, logMessage);
+                        
                         console.log(`⚠️ Invalid IMEI packet format from ${clientId}`);
                         console.log(`   - Buffer contents: ${dataBuffer.toString('hex')}`);
                         socket.destroy();
@@ -130,6 +210,12 @@ const server = net.createServer((socket) => {
                 }
             }
         } catch (error) {
+            const logMessage = `[${new Date().toISOString()}] ❌ Error processing data from ${clientId}\n` +
+                `   - Error: ${error.message}\n` +
+                `   - Data: ${data.toString('hex')}\n\n`;
+            
+            fs.appendFileSync(suspiciousLogFile, logMessage);
+            
             console.error(`\n❌ Error processing data from ${clientId}:`, error);
             console.error(`📊 Error details:`);
             console.error(`   - Buffer size: ${dataBuffer.length} bytes`);
@@ -209,7 +295,7 @@ const server = net.createServer((socket) => {
             }
         }
     });
-    
+        
     socket.on('error', (err) => {
         console.error(`\n❌ Socket error for ${clientId}: ${err.message}`);
         console.error(`📊 Error details:`);
@@ -219,6 +305,26 @@ const server = net.createServer((socket) => {
         socket.destroy();
     });
 });
+
+// Log connection attempts every 10s
+setInterval(() => {
+    const activeProbes = Array.from(connectionMap.values())
+        .filter(t => Date.now() - t < 60000)
+        .length;
+    
+    console.log('📊 Connection Statistics:');
+    console.log(`   - Active probes last minute: ${activeProbes}`);
+    console.log(`   - Total unique connections: ${connectionMap.size}`);
+    console.log(`   - Active devices: ${activeDevices.size}`);
+    
+    // Clean up old connection records
+    const oneMinuteAgo = Date.now() - 60000;
+    for (const [key, time] of connectionMap.entries()) {
+        if (time < oneMinuteAgo) {
+            connectionMap.delete(key);
+        }
+    }
+}, 10000);
 
 // Helper functions
 function isImeiPacket(buffer) {
