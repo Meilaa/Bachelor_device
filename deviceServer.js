@@ -2,7 +2,7 @@ const net = require('net');
 const { parseTeltonikaData } = require('./parsers');
 const { saveRawPacket, hexDump, isImeiPacket, parseImeiPacket } = require('./utils');
 const { DEVICE_PORT, SOCKET_TIMEOUT, DEBUG_LOG } = require('./config');
-const { connectToDatabase, saveDeviceData } = require('./database');
+const { connectToDatabase, saveDeviceData, getDeviceInfoByDeviceId } = require('./database');
 
 // Track connected devices
 const activeDevices = new Map(); // Maps deviceId to device info
@@ -50,6 +50,7 @@ const server = net.createServer((socket) => {
     
     // Configure socket
     socket.setTimeout(SOCKET_TIMEOUT);
+    socket.setKeepAlive(true, 60000); // Enable keepalive with 60 second interval
     
     let dataBuffer = Buffer.alloc(0); // Buffer to accumulate data
     let deviceId = null;
@@ -58,10 +59,12 @@ const server = net.createServer((socket) => {
     let packetsProcessed = 0;
     let connectionStartTime = Date.now();
     let isProcessing = false; // Flag to prevent concurrent processing
+    let isImeiProcessed = false; // Flag to track if IMEI has been processed
 
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-        socket.end();
+        // Don't end the connection immediately, just log the timeout
+        console.log('⚠️ Socket timeout detected, but keeping connection alive');
     });
 
     socket.on('data', async (data) => {
@@ -77,6 +80,7 @@ const server = net.createServer((socket) => {
             bytesReceived += data.length;
             
             console.log(`📩 Received ${data.length} bytes from ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+            console.log('📦 Raw data:', data.toString('hex'));
             
             // Append new data to our buffer
             dataBuffer = Buffer.concat([dataBuffer, data]);
@@ -86,36 +90,55 @@ const server = net.createServer((socket) => {
 
             async function processBuffer() {
                 // Check if we have enough data for basic analysis
-                if (dataBuffer.length < 2) return;
+                if (dataBuffer.length < 2) {
+                    console.log('⚠️ Not enough data for processing, waiting for more');
+                    return;
+                }
                 
                 // Check if this is a login/device ID packet (according to specification)
-                if (isImeiPacket(dataBuffer)) {
-                    deviceId = parseImeiPacket(dataBuffer);
-                    console.log(`📱 Device ID: ${deviceId}`);
-                    
-                    // Register device in active devices map
-                    activeDevices.set(deviceId, {
-                        socket: socket,
-                        deviceId: deviceId,
-                        clientId: clientId,
-                        connectedAt: new Date(),
-                        lastActivity: new Date(),
-                        bytesReceived: bytesReceived,
-                        packetsProcessed: 0
-                    });
-                    
-                    // Send proper acknowledgment to the device (1 byte: 0x01 = accept)
-                    const ackBuffer = Buffer.from([0x01]);
-                    socket.write(ackBuffer);
-                    console.log(`✅ Sent device ID acknowledgment: ${ackBuffer.toString('hex')}`);
-                    
-                    // Calculate how many bytes to remove (2 bytes length + device ID length)
-                    const deviceIdLength = dataBuffer.readUInt16BE(0);
-                    dataBuffer = dataBuffer.slice(2 + deviceIdLength);
-                    
-                    // Process any remaining data in the buffer
-                    if (dataBuffer.length > 0) await processBuffer();
-                } 
+                if (!isImeiProcessed && isImeiPacket(dataBuffer)) {
+                    try {
+                        deviceId = parseImeiPacket(dataBuffer);
+                        console.log(`📱 Device ID: ${deviceId}`);
+                        
+                        // Check if device exists in database
+                        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+                        if (!deviceInfo) {
+                            console.log(`⚠️ Device ${deviceId} not found in database`);
+                            // Don't disconnect, just mark as unknown
+                            deviceId = 'unknown';
+                        } else {
+                            console.log(`✅ Device ${deviceId} found in database`);
+                            // Register device in active devices map
+                            activeDevices.set(deviceId, {
+                                socket: socket,
+                                deviceId: deviceId,
+                                clientId: clientId,
+                                connectedAt: new Date(),
+                                lastActivity: new Date(),
+                                bytesReceived: bytesReceived,
+                                packetsProcessed: 0
+                            });
+                        }
+                        
+                        // Send acknowledgment to device regardless of database status
+                        const ackBuffer = Buffer.from([0x01]);
+                        socket.write(ackBuffer);
+                        console.log(`✅ Sent device ID acknowledgment: ${ackBuffer.toString('hex')}`);
+                        
+                        // Calculate how many bytes to remove (2 bytes length + device ID length)
+                        const deviceIdLength = dataBuffer.readUInt16BE(0);
+                        dataBuffer = dataBuffer.slice(2 + deviceIdLength);
+                        
+                        isImeiProcessed = true; // Mark IMEI as processed
+                        
+                        // Process any remaining data in the buffer
+                        if (dataBuffer.length > 0) await processBuffer();
+                    } catch (error) {
+                        console.error('❌ Error processing IMEI packet:', error);
+                        // Don't disconnect, try to process as AVL data
+                    }
+                }
                 // Check if we have a standard AVL data packet (starts with 00000000 preamble)
                 else if (dataBuffer.length >= 8) {
                     // Check for standard preamble (4 bytes of zeros)
@@ -161,20 +184,24 @@ const server = net.createServer((socket) => {
                         if (dataBuffer.length > 0) await processBuffer();
                     } else {
                         // Invalid preamble, remove first byte and try again
+                        console.log('⚠️ Invalid preamble, trying next byte');
                         dataBuffer = dataBuffer.slice(1);
                         await processBuffer();
                     }
+                } else {
+                    console.log('⚠️ Not enough data for processing, waiting for more');
                 }
             }
         } catch (error) {
             console.error(`❌ Error processing data for device ${deviceId || 'unknown'}:`, error);
-        } finally {
-            isProcessing = false;
         }
+        isProcessing = false;
     });
 
     socket.on('error', (error) => {
         console.error(`❌ Socket error for ${clientId} (Device ID: ${deviceId || 'unknown'}):`, error);
+        // Don't end the connection on error, just log it
+        console.log('⚠️ Socket error detected, but keeping connection alive');
     });
 
     socket.on('close', () => {

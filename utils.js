@@ -46,20 +46,39 @@ function isImeiPacket(buffer) {
         return false;
     }
     
-    // Read length as 2-byte integer
-    const imeiLength = buffer.readUInt16BE(0);
-    
-    // TMT250 usually sends 000F (15) but let's be flexible
-    if (imeiLength >= 15 && imeiLength <= 17 && buffer.length >= imeiLength + 2) {
-        // Check if the next bytes are ASCII digits
-        for (let i = 2; i < 2 + imeiLength; i++) {
-            if (i >= buffer.length) return false;
-            const char = buffer[i];
-            if (char < 0x30 || char > 0x39) { // ASCII range for digits
-                return false;
+    try {
+        // Read length as 2-byte integer
+        const imeiLength = buffer.readUInt16BE(0);
+        
+        // TMT250 usually sends 000F (15) but let's be flexible
+        if (imeiLength >= 10 && imeiLength <= 20 && buffer.length >= imeiLength + 2) {
+            // Check if the next bytes are ASCII digits
+            for (let i = 2; i < 2 + imeiLength; i++) {
+                if (i >= buffer.length) return false;
+                const char = buffer[i];
+                if (char < 0x30 || char > 0x39) { // ASCII range for digits
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        // Try to detect IMEI without length prefix
+        if (buffer.length >= 15) {
+            let allDigits = true;
+            for (let i = 0; i < 15; i++) {
+                if (buffer[i] < 0x30 || buffer[i] > 0x39) {
+                    allDigits = false;
+                    break;
+                }
+            }
+            if (allDigits) {
+                console.log('⚠️ Detected IMEI without length prefix');
+                return true;
             }
         }
-        return true;
+    } catch (error) {
+        console.error('Error checking IMEI packet:', error);
     }
     
     return false;
@@ -70,22 +89,36 @@ function parseImeiPacket(buffer) {
         throw new Error("Invalid IMEI packet: buffer too small");
     }
     
-    // Read IMEI length
-    const imeiLength = buffer.readUInt16BE(0);
-    
-    if (imeiLength < 15 || buffer.length < imeiLength + 2) {
-        throw new Error(`Invalid IMEI packet: length (${imeiLength}) too small or buffer too short`);
+    try {
+        // Try to read IMEI length first
+        const imeiLength = buffer.readUInt16BE(0);
+        
+        if (imeiLength >= 10 && imeiLength <= 20 && buffer.length >= imeiLength + 2) {
+            // Extract the IMEI as ASCII string
+            const imei = buffer.toString('ascii', 2, 2 + imeiLength);
+            
+            // Validate that we have digits
+            if (!/^\d+$/.test(imei)) {
+                throw new Error("Invalid IMEI format: expected digits only");
+            }
+            
+            return imei;
+        }
+        
+        // Try to parse IMEI without length prefix
+        if (buffer.length >= 15) {
+            const imei = buffer.toString('ascii', 0, 15);
+            if (/^\d+$/.test(imei)) {
+                console.log('⚠️ Parsed IMEI without length prefix:', imei);
+                return imei;
+            }
+        }
+        
+        throw new Error(`Invalid IMEI packet: length (${imeiLength}) out of range or buffer too short`);
+    } catch (error) {
+        console.error('Error parsing IMEI packet:', error);
+        throw error;
     }
-    
-    // Extract the IMEI as ASCII string
-    const imei = buffer.toString('ascii', 2, 2 + imeiLength);
-    
-    // Validate that we have digits
-    if (!/^\d+$/.test(imei)) {
-        throw new Error("Invalid IMEI format: expected digits only");
-    }
-    
-    return imei;
 }
 
 module.exports = {
