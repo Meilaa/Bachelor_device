@@ -6,7 +6,7 @@ const path = require('path');
 
 
 // Configuration
-const DEVICE_PORT = 5027; // TCP port for TMT250 device connections
+const DEVICE_PORT = 8080; // TCP port for TMT250 device connections
 const BACKEND_API_URL = "http://localhost:3001/api/deviceData";
 const DEBUG_LOG = true; // Set to false in production
 const SOCKET_TIMEOUT = 300000; // 5 minute socket timeout
