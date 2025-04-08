@@ -216,6 +216,5 @@ module.exports = {
     connectToDatabase,
     saveDeviceData,
     DeviceData,
-    WalkPath,
-    getDeviceInfoByDeviceId
+    WalkPath
 }; 
