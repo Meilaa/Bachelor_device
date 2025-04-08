@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { MONGODB_URI, DEBUG_LOG } = require('./config');
+const { MONGODB_URI } = require('./config');
 
 // Define Mongoose schemas
 const deviceSchema = new mongoose.Schema({
@@ -12,7 +12,7 @@ const deviceDataSchema = new mongoose.Schema({
     deviceId: { type: String, required: true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     animal: { type: mongoose.Schema.Types.ObjectId, ref: 'Animal', required: true },
-    timestamp: { type: Number, required: true },
+    timestamp: { type: Date, required: true },
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
     altitude: { type: Number, required: true },
@@ -27,30 +27,14 @@ const deviceDataSchema = new mongoose.Schema({
     movement: { type: Boolean },
     charging: { type: Boolean },
     gsmSignal: { type: Number },
-    manDown: { type: Boolean },
     batteryVoltage: { type: Number },
     gnssPDOP: { type: Number },
     gnssHDOP: { type: Number }
 }, { timestamps: true });
 
-const walkPathSchema = new mongoose.Schema({
-    deviceId: { type: String, required: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    animal: { type: mongoose.Schema.Types.ObjectId, ref: 'Animal', required: true },
-    startTime: { type: Number, required: true },
-    endTime: { type: Number },
-    points: [{
-        timestamp: { type: Number, required: true },
-        latitude: { type: Number, required: true },
-        longitude: { type: Number, required: true },
-        speed: { type: Number, required: true }
-    }]
-}, { timestamps: true });
-
 // Create models
 const Device = mongoose.model('Device', deviceSchema);
 const DeviceData = mongoose.model('DeviceData', deviceDataSchema);
-const WalkPath = mongoose.model('WalkPath', walkPathSchema);
 
 // Function to get device info from database using deviceId
 async function getDeviceInfoByDeviceId(deviceId) {
@@ -85,136 +69,63 @@ async function connectToDatabase() {
 // Function to save device data
 async function saveDeviceData(deviceId, records) {
     try {
-        // Get device info from database
         const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
         if (!deviceInfo) {
             console.warn(`Skipping data save - Device with ID ${deviceId} not found in database`);
             return;
         }
 
-        let totalRecords = 0;
-        // Process each record
-        for (const record of records) {
-            try {
-                // Validate required fields
-                if (!record.timestamp || !record.latitude || !record.longitude) {
-                    continue;
-                }
-
-                // Create device data document
-                const deviceData = new DeviceData({
-                    deviceId: deviceInfo.deviceId,
-                    user: deviceInfo.userId,
-                    animal: deviceInfo.animalId,
-                    timestamp: record.timestamp,
-                    latitude: record.latitude,
-                    longitude: record.longitude,
-                    altitude: record.altitude,
-                    angle: record.angle,
-                    satellites: record.satellites,
-                    speed: record.speed,
-                    priority: record.priority,
-                    eventIOID: record.eventIOID,
-                    elements: record.elements,
-                    batteryLevel: record.batteryLevel,
-                    gnssStatus: record.gnssStatus,
-                    movement: record.movement,
-                    charging: record.charging,
-                    gsmSignal: record.gsmSignal,
-                    manDown: record.manDown,
-                    batteryVoltage: record.batteryVoltage,
-                    gnssPDOP: record.gnssPDOP,
-                    gnssHDOP: record.gnssHDOP
-                });
-
-                // Save device data
-                await deviceData.save();
-                totalRecords++;
-
-                // Handle movement tracking
-                if (record.movement !== undefined) {
-                    await handleMovementTracking(deviceInfo, record);
-                }
-
-            } catch (recordError) {
-                if (DEBUG_LOG) {
-                    console.error('Error processing record:', recordError);
-                }
-            }
+        const latestRecord = records[records.length - 1];
+        if (!latestRecord) {
+            console.warn('No valid records to save');
+            return;
         }
 
-        if (totalRecords > 0) {
-            console.log(`✅ Saved ${totalRecords} records to database for device ${deviceId}`);
+        if (!latestRecord.latitude || !latestRecord.longitude) {
+            console.warn('Latest record missing required fields');
+            return;
         }
+
+        // Convert device timestamp to Lithuanian time
+        const deviceDate = new Date(latestRecord.timestamp);
+        const lithuanianDate = new Date(deviceDate.getTime() + (3 * 60 * 60 * 1000)); // Add 3 hours for UTC+3
+
+        // Create document without saving
+        const deviceData = new DeviceData({
+            deviceId: deviceInfo.deviceId,
+            user: deviceInfo.userId,
+            animal: deviceInfo.animalId,
+            timestamp: lithuanianDate,
+            latitude: latestRecord.latitude,
+            longitude: latestRecord.longitude,
+            altitude: latestRecord.altitude,
+            angle: latestRecord.angle,
+            satellites: latestRecord.satellites,
+            speed: latestRecord.speed,
+            priority: latestRecord.priority,
+            eventIOID: latestRecord.eventIOID,
+            elements: latestRecord.elements,
+            batteryLevel: latestRecord.batteryLevel,
+            gnssStatus: latestRecord.gnssStatus,
+            movement: latestRecord.movement,
+            charging: latestRecord.charging,
+            gsmSignal: latestRecord.gsmSignal,
+            batteryVoltage: latestRecord.batteryVoltage,
+            gnssPDOP: latestRecord.gnssPDOP,
+            gnssHDOP: latestRecord.gnssHDOP
+        });
+
+        await deviceData.save();
+        console.log(`✅ Saved latest position for device ${deviceId} at ${lithuanianDate.toLocaleString('lt-LT')}`);
 
     } catch (error) {
         console.error('Error saving device data:', error);
     }
 }
 
-// Helper function to create a new walk path with initial points
-async function createWalkPathWithInitialPoints(deviceInfo, record) {
-    const walkPath = new WalkPath({
-        deviceId: deviceInfo.deviceId,
-        user: deviceInfo.userId,
-        animal: deviceInfo.animalId,
-        startTime: record.timestamp,
-        points: [{
-            timestamp: record.timestamp,
-            latitude: record.latitude,
-            longitude: record.longitude,
-            speed: record.speed
-        }]
-    });
-    await walkPath.save();
-    return walkPath;
-}
-
-// Helper function to update an existing walk path
-async function updateWalkPath(walkPath, record) {
-    walkPath.points.push({
-        timestamp: record.timestamp,
-        latitude: record.latitude,
-        longitude: record.longitude,
-        speed: record.speed
-    });
-    await walkPath.save();
-}
-
-// Function to handle movement tracking
-async function handleMovementTracking(deviceInfo, record) {
-    try {
-        // Find the most recent walk path for this device
-        const latestWalkPath = await WalkPath.findOne({
-            deviceId: deviceInfo.deviceId,
-            endTime: null
-        }).sort({ startTime: -1 });
-
-        if (record.movement) {
-            // Device is moving
-            if (latestWalkPath) {
-                // Update existing walk path
-                await updateWalkPath(latestWalkPath, record);
-            } else {
-                // Create new walk path
-                await createWalkPathWithInitialPoints(deviceInfo, record);
-            }
-        } else {
-            // Device has stopped
-            if (latestWalkPath) {
-                // End the walk path
-                latestWalkPath.endTime = record.timestamp;
-                await latestWalkPath.save();
-            }
-        }
-    } catch (error) {
-        console.error('Error handling movement tracking:', error);
-    }
-}
-
 module.exports = {
     connectToDatabase,
     saveDeviceData,
-    DeviceData,
-    WalkPath
+    getDeviceInfoByDeviceId,
+    DeviceData
 }; 

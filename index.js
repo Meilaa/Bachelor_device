@@ -1,72 +1,80 @@
 require('dotenv').config(); // Load environment variables
 
+const express = require('express');
 const { startDeviceServer, activeDevices } = require('./deviceServer');
-const { startMonitorServer } = require('./monitorServer');
-const { connectToDatabase } = require('./database.js');
+const { connectToDatabase } = require('./database');
+const { MONITORING_PORT } = require('./config');
 
-// Connect to MongoDB and start the servers
-connectToDatabase()
-    .then(() => {
-        try {
-            if (!global.DISABLE_SERVER_AUTOSTART) {
-                // Start monitoring HTTP server
-                startMonitorServer(activeDevices);
+const app = express();
 
-                // Start device TCP server
-                startDeviceServer();
+// Middleware to parse JSON bodies
+app.use(express.json());
 
-                // Handle server closing
-                const shutdownHandler = () => {
-                    console.log('🛑 Shutting down servers...');
+// Start the servers
+async function initializeServers() {
+    try {
+        // Connect to database
+        await connectToDatabase();
+        console.log('✅ Database connection established');
 
-                    // Close all device connections
-                    for (const [imei, info] of activeDevices.entries()) {
-                        try {
-                            info.socket.end();
-                            console.log(`✅ Closed connection to device ${imei}`);
-                        } catch (err) {
-                            console.error(`❌ Error closing connection to device ${imei}: ${err.message}`);
-                        }
-                    }
+        // Start device server
+        await startDeviceServer();
+        console.log('✅ Device server started');
 
-                    // Force exit after 3 seconds if servers haven't closed
-                    setTimeout(() => {
-                        console.error('⚠️ Forced exit after timeout');
-                        process.exit(1);
-                    }, 3000);
-                };
+        // Start monitoring server
+        app.listen(MONITORING_PORT, () => {
+            console.log(`📊 Monitoring server listening on port ${MONITORING_PORT}`);
+        });
 
-                // Register shutdown handlers
-                process.on('SIGINT', shutdownHandler);
-                process.on('SIGTERM', shutdownHandler);
+        // Handle server closing
+        const shutdownHandler = () => {
+            console.log('🛑 Shutting down servers...');
 
-                console.log('🔄 Server initialization complete');
+            // Close all device connections
+            for (const [imei, info] of activeDevices.entries()) {
+                try {
+                    info.socket.end();
+                    console.log(`✅ Closed connection to device ${imei}`);
+                } catch (err) {
+                    console.error(`❌ Error closing connection to device ${imei}: ${err.message}`);
+                }
             }
-        } catch (error) {
-            console.error('❌ Server initialization error:', error);
-            process.exit(1);
-        }
-    })
-    .catch(err => {
-        console.error('❌ Failed to connect to the database:', err);
+
+            // Force exit after 3 seconds if servers haven't closed
+            setTimeout(() => {
+                console.error('⚠️ Forced exit after timeout');
+                process.exit(1);
+            }, 3000);
+        };
+
+        // Register shutdown handlers
+        process.on('SIGINT', shutdownHandler);
+        process.on('SIGTERM', shutdownHandler);
+
+        console.log('🔄 Server initialization complete');
+    } catch (error) {
+        console.error('❌ Server initialization error:', error);
         process.exit(1);
-    });
+    }
+}
+
+// Initialize servers
+initializeServers();
 
 // Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    console.error('❌ Uncaught exception:', error);
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err);
     process.exit(1);
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (error) => {
-    console.error('❌ Unhandled promise rejection:', error);
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
     process.exit(1);
 });
 
 // Export the server instances for testing
 module.exports = {
     deviceServer: require('./deviceServer').server,
-    monitorServer: require('./monitorServer').monitorServer,
     activeDevices
 };
