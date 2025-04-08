@@ -3,7 +3,7 @@ const { getDeviceInfoByDeviceId, saveDeviceData } = require('./database');
 const { parseTeltonikaData } = require('./parsers');
 
 // Configuration
-const DEVICE_PORT = 8080;
+const DEVICE_PORT = 5005;
 const SOCKET_TIMEOUT = 300000;
 const DEBUG_LOG = true;
 
