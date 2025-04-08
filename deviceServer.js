@@ -12,17 +12,25 @@ const server = net.createServer((socket) => {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`📡 New device connected: ${clientId}`);
     
-    // Configure socket
-    socket.setTimeout(SOCKET_TIMEOUT);
+    // Configure socket with longer timeout and keep-alive
+    socket.setTimeout(300000); // 5 minutes timeout
+    socket.setKeepAlive(true, 60000); // Enable keep-alive every 60 seconds
     
     let dataBuffer = Buffer.alloc(0);
     let deviceId = null;
     let isProcessing = false;
     let isImeiProcessed = false;
+    let lastDataTime = Date.now();
 
     socket.on('timeout', () => {
-        console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-        socket.end();
+        const timeSinceLastData = Date.now() - lastDataTime;
+        if (timeSinceLastData > 300000) { // 5 minutes without data
+            console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+            socket.end();
+        } else {
+            // Reset timeout if we've received data recently
+            socket.setTimeout(300000);
+        }
     });
 
     // Function to process the data buffer
@@ -73,6 +81,7 @@ const server = net.createServer((socket) => {
                         const bytesPerRecord = 45;
                         const bytesProcessed = records.length * bytesPerRecord;
                         dataBuffer = dataBuffer.slice(bytesProcessed);
+                        lastDataTime = Date.now();
                     }
                 } catch (error) {
                     console.error(`❌ Error processing data for device ${deviceId}:`, error);
@@ -88,6 +97,17 @@ const server = net.createServer((socket) => {
     socket.on('data', async (data) => {
         dataBuffer = Buffer.concat([dataBuffer, data]);
         await processBuffer();
+    });
+
+    socket.on('error', (error) => {
+        console.error(`❌ Socket error for ${clientId}:`, error);
+    });
+
+    socket.on('close', () => {
+        console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+        if (deviceId) {
+            activeDevices.delete(deviceId);
+        }
     });
 });
 
