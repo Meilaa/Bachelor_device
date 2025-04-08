@@ -37,7 +37,11 @@ function isRateLimited(deviceId) {
 }
 
 // Create a TCP server to receive data from the device
-const server = net.createServer((socket) => {
+const server = net.createServer({
+    keepAlive: true,
+    keepAliveInitialDelay: 60000,
+    noDelay: true
+}, (socket) => {
     // Check if we've reached maximum connections
     if (activeDevices.size >= RATE_LIMIT.maxConnections) {
         console.log('⚠️ Maximum connections reached, rejecting new connection');
@@ -49,8 +53,8 @@ const server = net.createServer((socket) => {
     
     // Configure socket
     socket.setTimeout(SOCKET_TIMEOUT);
-    socket.setKeepAlive(true, 60000); // Enable keepalive with 60 second interval
-    socket.setNoDelay(true); // Disable Nagle's algorithm for faster response
+    socket.setKeepAlive(true, 60000);
+    socket.setNoDelay(true);
     
     // Force socket settings to be applied
     socket.on('connect', () => {
@@ -60,14 +64,14 @@ const server = net.createServer((socket) => {
         socket.setTimeout(SOCKET_TIMEOUT);
     });
     
-    let dataBuffer = Buffer.alloc(0); // Buffer to accumulate data
+    let dataBuffer = Buffer.alloc(0);
     let deviceId = null;
     let lastActivity = Date.now();
     let bytesReceived = 0;
     let packetsProcessed = 0;
     let connectionStartTime = Date.now();
-    let isProcessing = false; // Flag to prevent concurrent processing
-    let isImeiProcessed = false; // Flag to track if IMEI has been processed
+    let isProcessing = false;
+    let isImeiProcessed = false;
 
     // Log initial connection details
     console.log(`📡 New device connected: ${clientId}`);
@@ -83,17 +87,56 @@ const server = net.createServer((socket) => {
 
     // Send initial acknowledgment to keep connection alive
     const initialAck = Buffer.from([0x01]);
-    socket.write(initialAck);
-    console.log('📤 Sent initial acknowledgment to device');
+    socket.write(initialAck, (err) => {
+        if (err) {
+            console.error('❌ Error sending initial acknowledgment:', err);
+        } else {
+            console.log('📤 Sent initial acknowledgment to device');
+        }
+    });
+
+    // Set up periodic keepalive
+    const keepAliveInterval = setInterval(() => {
+        if (!socket.destroyed) {
+            socket.write(initialAck, (err) => {
+                if (err) {
+                    console.error('❌ Error sending keepalive:', err);
+                } else {
+                    console.log('📤 Sent keepalive acknowledgment');
+                }
+            });
+        }
+    }, 30000); // Send keepalive every 30 seconds
 
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
         console.log('⚠️ Socket timeout detected, but keeping connection alive');
-        // Reset the timeout timer
         socket.setTimeout(SOCKET_TIMEOUT);
-        // Send keepalive packet
-        socket.write(initialAck);
-        console.log('📤 Sent keepalive acknowledgment');
+    });
+
+    socket.on('error', (error) => {
+        console.error(`❌ Socket error for ${clientId} (Device ID: ${deviceId || 'unknown'}):`, error);
+        console.error('❌ Error details:', {
+            message: error.message,
+            stack: error.stack
+        });
+    });
+
+    socket.on('close', () => {
+        console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+        console.log('📊 Connection statistics:', {
+            duration: Date.now() - connectionStartTime,
+            bytesReceived,
+            packetsProcessed,
+            isImeiProcessed
+        });
+        
+        // Clean up
+        clearInterval(keepAliveInterval);
+        if (deviceId) {
+            activeDevices.delete(deviceId);
+            requestCounts.delete(deviceId);
+        }
     });
 
     socket.on('data', async (data) => {
@@ -240,30 +283,6 @@ const server = net.createServer((socket) => {
             });
         }
         isProcessing = false;
-    });
-
-    socket.on('error', (error) => {
-        console.error(`❌ Socket error for ${clientId} (Device ID: ${deviceId || 'unknown'}):`, error);
-        console.error('❌ Error details:', {
-            message: error.message,
-            stack: error.stack
-        });
-        // Don't end the connection on error, just log it
-        console.log('⚠️ Socket error detected, but keeping connection alive');
-    });
-
-    socket.on('close', () => {
-        console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-        console.log('📊 Connection statistics:', {
-            duration: Date.now() - connectionStartTime,
-            bytesReceived,
-            packetsProcessed,
-            isImeiProcessed
-        });
-        if (deviceId) {
-            activeDevices.delete(deviceId);
-            requestCounts.delete(deviceId);
-        }
     });
 });
 
