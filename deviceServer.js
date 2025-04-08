@@ -46,11 +46,11 @@ const server = net.createServer((socket) => {
     }
 
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
-    console.log(`📡 New device connected: ${clientId}`);
     
     // Configure socket
     socket.setTimeout(SOCKET_TIMEOUT);
     socket.setKeepAlive(true, 60000); // Enable keepalive with 60 second interval
+    socket.setNoDelay(true); // Disable Nagle's algorithm for faster response
     
     let dataBuffer = Buffer.alloc(0); // Buffer to accumulate data
     let deviceId = null;
@@ -61,10 +61,23 @@ const server = net.createServer((socket) => {
     let isProcessing = false; // Flag to prevent concurrent processing
     let isImeiProcessed = false; // Flag to track if IMEI has been processed
 
+    // Log initial connection details
+    console.log(`📡 New device connected: ${clientId}`);
+    console.log(`📡 Socket details:`, {
+        remoteAddress: socket.remoteAddress,
+        remotePort: socket.remotePort,
+        localAddress: socket.localAddress,
+        localPort: socket.localPort,
+        timeout: socket.timeout,
+        keepAlive: socket.keepAlive,
+        noDelay: socket.noDelay
+    });
+
     socket.on('timeout', () => {
         console.log(`⏱️ Connection timed out: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-        // Don't end the connection immediately, just log the timeout
         console.log('⚠️ Socket timeout detected, but keeping connection alive');
+        // Reset the timeout timer
+        socket.setTimeout(SOCKET_TIMEOUT);
     });
 
     socket.on('data', async (data) => {
@@ -80,7 +93,8 @@ const server = net.createServer((socket) => {
             bytesReceived += data.length;
             
             console.log(`📩 Received ${data.length} bytes from ${clientId} (Device ID: ${deviceId || 'unknown'})`);
-            console.log('📦 Raw data:', data.toString('hex'));
+            console.log('📦 Raw data (hex):', data.toString('hex'));
+            console.log('📦 Raw data (ascii):', data.toString('ascii'));
             
             // Append new data to our buffer
             dataBuffer = Buffer.concat([dataBuffer, data]);
@@ -95,9 +109,14 @@ const server = net.createServer((socket) => {
                     return;
                 }
                 
+                // Log buffer state
+                console.log(`📦 Current buffer length: ${dataBuffer.length} bytes`);
+                console.log(`📦 Buffer content (hex): ${dataBuffer.toString('hex')}`);
+                
                 // Check if this is a login/device ID packet (according to specification)
                 if (!isImeiProcessed && isImeiPacket(dataBuffer)) {
                     try {
+                        console.log('🔍 Processing IMEI packet...');
                         deviceId = parseImeiPacket(dataBuffer);
                         console.log(`📱 Device ID: ${deviceId}`);
                         
@@ -136,6 +155,11 @@ const server = net.createServer((socket) => {
                         if (dataBuffer.length > 0) await processBuffer();
                     } catch (error) {
                         console.error('❌ Error processing IMEI packet:', error);
+                        console.error('❌ Error details:', {
+                            message: error.message,
+                            stack: error.stack,
+                            buffer: dataBuffer.toString('hex')
+                        });
                         // Don't disconnect, try to process as AVL data
                     }
                 }
@@ -194,18 +218,32 @@ const server = net.createServer((socket) => {
             }
         } catch (error) {
             console.error(`❌ Error processing data for device ${deviceId || 'unknown'}:`, error);
+            console.error('❌ Error details:', {
+                message: error.message,
+                stack: error.stack
+            });
         }
         isProcessing = false;
     });
 
     socket.on('error', (error) => {
         console.error(`❌ Socket error for ${clientId} (Device ID: ${deviceId || 'unknown'}):`, error);
+        console.error('❌ Error details:', {
+            message: error.message,
+            stack: error.stack
+        });
         // Don't end the connection on error, just log it
         console.log('⚠️ Socket error detected, but keeping connection alive');
     });
 
     socket.on('close', () => {
         console.log(`🔌 Connection closed: ${clientId} (Device ID: ${deviceId || 'unknown'})`);
+        console.log('📊 Connection statistics:', {
+            duration: Date.now() - connectionStartTime,
+            bytesReceived,
+            packetsProcessed,
+            isImeiProcessed
+        });
         if (deviceId) {
             activeDevices.delete(deviceId);
             requestCounts.delete(deviceId);
