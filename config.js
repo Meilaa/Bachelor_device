@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 // Configuration
-const DEVICE_PORT = parseInt(process.env.DEVICE_PORT) || 8080; // TCP port for TMT250 device connections
+const DEVICE_PORT = parseInt(process.env.DEVICE_PORT) || 5005; // TCP port for TMT250 device connections
 const DEBUG_LOG = process.env.DEBUG_LOG === 'true'; // Set to false in production
 const SOCKET_TIMEOUT = parseInt(process.env.SOCKET_TIMEOUT) || 15000; // Reduced from 300000
 const KEEPALIVE_INTERVAL = parseInt(process.env.KEEPALIVE_INTERVAL) || 45000; // Add this
