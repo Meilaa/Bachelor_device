@@ -58,33 +58,59 @@ monitorServer.get('/devices', (req, res) => {
     }
 });
 
-// Start the monitoring server
-function startMonitorServer(activeDevices) {
+// Connections endpoint
+monitorServer.get('/connections', (req, res) => {
     try {
-        // Store active devices in app locals
+        const server = req.app.locals.deviceServer;
+        if (!server) {
+            return res.status(503).json({ error: 'Device server not available' });
+        }
+
+        server.getConnections((err, count) => {
+            if (err) {
+                console.error('❌ Error getting connections:', err);
+                return res.status(500).json({ error: 'Failed to get connection count' });
+            }
+
+            const activeDevices = req.app.locals.activeDevices || new Map();
+            const connectionIssues = Array.from(activeDevices.values())
+                .filter(d => Date.now() - d.lastActivity > 30000);
+
+            res.json({
+                activeConnections: count,
+                timestamp: new Date().toISOString(),
+                connectionIssues
+            });
+        });
+    } catch (error) {
+        console.error('❌ Connections endpoint error:', error);
+        res.status(500).json({ error: 'Failed to get connection information' });
+    }
+});
+
+// Start the monitoring server
+function startMonitorServer(deviceServer, activeDevices) {
+    try {
+        // Store device server and active devices in app locals
+        monitorServer.locals.deviceServer = deviceServer;
         monitorServer.locals.activeDevices = activeDevices;
 
+        if (!MONITOR_PORT) {
+            throw new Error('MONITOR_PORT is not defined');
+        }
+
         monitorServer.listen(MONITOR_PORT, () => {
-            console.log(`🖥️ Monitoring server listening on port ${MONITOR_PORT}`);
-            console.log(`    Health endpoint: http://localhost:${MONITOR_PORT}/health`);
-            console.log(`    Devices endpoint: http://localhost:${MONITOR_PORT}/devices`);
+            console.log(`\n📊 Monitoring server listening on port ${MONITOR_PORT}`);
+            console.log(`   - Health endpoint: http://localhost:${MONITOR_PORT}/health`);
+            console.log(`   - Devices endpoint: http://localhost:${MONITOR_PORT}/devices`);
+            console.log(`   - Connections endpoint: http://localhost:${MONITOR_PORT}/connections`);
         });
     } catch (error) {
         console.error('❌ Failed to start monitoring server:', error);
         process.exit(1);
     }
 }
-// Add to your monitoring endpoints
-monitorServer.get('/connections', (req, res) => {
-    const connections = server.getConnections((err, count) => {
-        res.json({
-            activeConnections: count,
-            timestamp: new Date().toISOString(),
-            connectionIssues: Array.from(activeDevices.values())
-                .filter(d => Date.now() - d.lastActivity > 30000)
-        });
-    });
-});
+
 module.exports = {
     monitorServer,
     startMonitorServer
