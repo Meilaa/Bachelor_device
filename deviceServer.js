@@ -7,12 +7,24 @@ const DEVICE_PORT = 5005;
 const SOCKET_TIMEOUT = 300000; // 5 minutes
 const DEBUG_LOG = true;
 
+// List of IPs to block
+const BLOCKED_IPS = ['::ffff:10.244.33.1', '10.244.33.1'];
+
 // Track active devices
 const activeDevices = new Map();
 
 // Create TCP server
 const server = net.createServer((socket) => {
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+    const clientIP = socket.remoteAddress;
+    
+    // Check if this IP is in the blocklist
+    if (BLOCKED_IPS.includes(clientIP)) {
+        console.log(`🚫 Blocking connection from banned IP: ${clientIP}`);
+        socket.destroy(); // Immediately destroy the socket
+        return;
+    }
+    
     console.log(`📡 New device connected: ${clientId}`);
 
     socket.setTimeout(SOCKET_TIMEOUT);
@@ -133,6 +145,7 @@ const server = net.createServer((socket) => {
         if (deviceImei && activeDevices.has(deviceImei)) {
             activeDevices.delete(deviceImei);
         }
+        clearTimeout(timeoutHandler); // Clear timeout to prevent memory leaks
     });
 
     socket.on('error', (err) => {
@@ -167,6 +180,7 @@ async function startServer() {
     try {
         server.listen(DEVICE_PORT, () => {
             console.log(`🚀 Device server listening on port ${DEVICE_PORT}`);
+            console.log(`🛡️ IP blocking enabled. Blocked IPs: ${BLOCKED_IPS.join(', ')}`);
         });
     } catch (error) {
         console.error('Failed to start server:', error);
