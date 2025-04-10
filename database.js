@@ -76,6 +76,7 @@ async function saveDeviceData(deviceId, records) {
             return;
         }
 
+        // Only take the latest record
         const latestRecord = records[records.length - 1];
         const deviceDoc = await Device.findOne({ deviceId: deviceId });
         
@@ -127,7 +128,7 @@ async function saveDeviceData(deviceId, records) {
         deviceDoc.lastData = savedRecord._id;
         await deviceDoc.save();
 
-        console.log(`Saved new record for device ${deviceId} with timestamp ${timestamp.toISOString()}`);
+        console.log(`Saved latest record for device ${deviceId} with timestamp ${timestamp.toISOString()}`);
     } catch (error) {
         console.error('Error saving device data:', error);
     }
