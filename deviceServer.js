@@ -120,54 +120,88 @@ const server = net.createServer((socket) => {
             dataBuffer = dataBuffer.slice(2 + imeiLength);
 
             if (dataBuffer.length > 0) processBuffer();
-        }
-        else if (dataBuffer.length >= 8) {
-            const preamble = dataBuffer.readUInt32BE(0);
-            if (preamble !== 0) {
-                dataBuffer = dataBuffer.slice(1);
-                if (dataBuffer.length > 0) processBuffer();
-                return;
-            }
+        } else {
+            // Try to parse as JSON first
+            try {
+                const jsonData = JSON.parse(dataBuffer.toString());
+                console.log(`📦 Received JSON data from ${deviceImei}:`, jsonData);
+                
+                // Process the JSON data
+                const record = {
+                    deviceImei: deviceImei,
+                    deviceId: deviceImei,
+                    timestamp: jsonData.timestamp,
+                    latitude: jsonData.positionLatitude,
+                    longitude: jsonData.positionLongitude,
+                    movementStatus: jsonData.movementStatus,
+                    ioElements: [{
+                        id: 240,
+                        value: jsonData.movementStatus ? 1 : 0
+                    }]
+                };
 
-            const dataLength = dataBuffer.readUInt32BE(4);
-            const totalLength = 8 + dataLength + 4;
-
-            if (dataBuffer.length >= totalLength) {
-                const fullPacket = dataBuffer.slice(0, totalLength);
-                const records = parseTeltonikaData(fullPacket, deviceImei);
-
-                if (records.length > 0) {
-                    // Filter records to only include those newer than server start
-                    const newRecords = records.filter(record => {
-                        const recordTime = new Date(record.timestamp).getTime();
-                        return recordTime > SERVER_START_TIME;
-                    });
-
-                    if (newRecords.length > 0) {
-                        console.log(`📊 Processing ${newRecords.length} new records from ${deviceImei} at ${new Date().toISOString()}`);
-                        
-                        // Process each record for walk tracking
-                        for (const record of newRecords) {
-                            await processWalkTracking(deviceImei, record);
-                        }
-                        
-                        try {
-                            await saveDeviceData(deviceImei, newRecords);
-                            console.log(`✅ Saved latest record for ${deviceImei} with timestamp ${new Date(newRecords[newRecords.length - 1].timestamp).toISOString()}`);
-                        } catch (error) {
-                            console.error(`❌ Failed to save records for ${deviceImei}:`, error.message);
-                        }
-                    } else {
-                        console.log(`⏭️ Skipping ${records.length} historical records from ${deviceImei}`);
-                    }
-
-                    const ackBuffer = Buffer.alloc(4);
-                    ackBuffer.writeUInt32BE(records.length, 0);
-                    socket.write(ackBuffer);
+                // Process walk tracking
+                await processWalkTracking(deviceImei, record);
+                
+                // Save device data
+                try {
+                    await saveDeviceData(deviceImei, [record]);
+                    console.log(`✅ Saved device data for ${deviceImei}`);
+                } catch (error) {
+                    console.error(`❌ Failed to save device data for ${deviceImei}:`, error.message);
                 }
 
-                dataBuffer = dataBuffer.slice(totalLength);
-                if (dataBuffer.length > 0) processBuffer();
+                // Clear the buffer
+                dataBuffer = Buffer.alloc(0);
+            } catch (e) {
+                // Not JSON data, try Teltonika parsing
+                if (dataBuffer.length >= 8) {
+                    const preamble = dataBuffer.readUInt32BE(0);
+                    if (preamble !== 0) {
+                        dataBuffer = dataBuffer.slice(1);
+                        if (dataBuffer.length > 0) processBuffer();
+                        return;
+                    }
+
+                    const dataLength = dataBuffer.readUInt32BE(4);
+                    const totalLength = 8 + dataLength + 4;
+
+                    if (dataBuffer.length >= totalLength) {
+                        const fullPacket = dataBuffer.slice(0, totalLength);
+                        const records = parseTeltonikaData(fullPacket, deviceImei);
+
+                        if (records.length > 0) {
+                            // Filter records to only include those newer than server start
+                            const newRecords = records.filter(record => {
+                                const recordTime = new Date(record.timestamp).getTime();
+                                return recordTime > SERVER_START_TIME;
+                            });
+
+                            if (newRecords.length > 0) {
+                                console.log(`📊 Processing ${newRecords.length} new records from ${deviceImei}`);
+                                
+                                // Process each record for walk tracking
+                                for (const record of newRecords) {
+                                    await processWalkTracking(deviceImei, record);
+                                }
+                                
+                                try {
+                                    await saveDeviceData(deviceImei, newRecords);
+                                    console.log(`✅ Saved latest record for ${deviceImei}`);
+                                } catch (error) {
+                                    console.error(`❌ Failed to save records for ${deviceImei}:`, error.message);
+                                }
+                            }
+
+                            const ackBuffer = Buffer.alloc(4);
+                            ackBuffer.writeUInt32BE(records.length, 0);
+                            socket.write(ackBuffer);
+                        }
+
+                        dataBuffer = dataBuffer.slice(totalLength);
+                        if (dataBuffer.length > 0) processBuffer();
+                    }
+                }
             }
         }
     }
@@ -199,33 +233,39 @@ async function processWalkTracking(deviceImei, record) {
                                record.longitude !== null;
     
     if (hasValidCoordinates) {
-        if (record.movement === true) {
+        // Check movement status from the record
+        const isMoving = record.movementStatus === true || record.movement === true;
+        console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus || record.movement}`);
+        
+        if (isMoving) {
             // Reset false duration counter when movement is true
             deviceTracker.falseDuration = 0;
             
-            // Store this point in the pending points
+            // If we were not moving before, reset movement start time
+            if (!deviceTracker.movementStartTime) {
+                deviceTracker.movementStartTime = timestamp;
+                console.log(`🚶‍♂️ Device ${deviceImei}: Movement detected, starting movement timer at ${timestamp.toLocaleTimeString()}`);
+            }
+            
+            // Store this point in the pending points regardless of tracking status
             pendingPoints[deviceImei].push({
                 latitude: record.latitude,
                 longitude: record.longitude,
                 timestamp: timestamp
             });
             
-            // Update or initialize movementStartTime
-            if (!deviceTracker.movementStartTime) {
-                deviceTracker.movementStartTime = timestamp;
-                console.log(`Device ${deviceImei}: Movement detected, starting movement timer`);
-            }
-            
-            // Changed from 1 min to 5 min (300000ms) before starting to save
-            const MOVEMENT_THRESHOLD = 5 * 60 * 1000; // 5 minutes in milliseconds
+            // Wait for 2 minutes of continuous movement before starting to save
+            const MOVEMENT_THRESHOLD = 2 * 60 * 1000; // 2 minutes in milliseconds
             const movementDuration = timestamp - deviceTracker.movementStartTime;
             
-            // If not already saving and we've been moving for 5+ minutes, start saving
+            console.log(`⏱️ Device ${deviceImei}: Movement duration: ${Math.round(movementDuration/1000)} seconds`);
+            
+            // If not already saving and we've been moving for 2+ minutes, start saving
             if (!deviceTracker.isSaving && movementDuration >= MOVEMENT_THRESHOLD) {
                 deviceTracker.isSaving = true;
-                console.log(`Device ${deviceImei}: Started tracking movement after ${Math.round(movementDuration/1000)} seconds of activity`);
+                console.log(`📝 Device ${deviceImei}: Started tracking movement after ${Math.round(movementDuration/1000)} seconds of activity`);
                 
-                // Save all pending points
+                // Save all pending points that have been accumulated during the 2-minute period
                 if (pendingPoints[deviceImei] && pendingPoints[deviceImei].length > 0) {
                     const points = pendingPoints[deviceImei];
                     // Filter out any points with invalid coordinates
@@ -235,47 +275,42 @@ async function processWalkTracking(deviceImei, record) {
                     );
                     
                     if (validPoints.length > 0) {
+                        console.log(`📊 Device ${deviceImei}: Creating walk path with ${validPoints.length} initial points`);
                         await createWalkPathWithInitialPoints(deviceImei, validPoints);
+                        console.log(`✅ Device ${deviceImei}: Saved ${validPoints.length} buffered points after 2-minute threshold`);
                     }
                     pendingPoints[deviceImei] = []; // Clear pending points after saving
                 }
             } else if (deviceTracker.isSaving) {
                 // Save path data if we're in saving mode
+                console.log(`📍 Device ${deviceImei}: Adding point to walk path at ${timestamp.toLocaleTimeString()}`);
                 await updateWalkPath(deviceImei, record.latitude, record.longitude, timestamp);
+                console.log(`✅ Device ${deviceImei}: Updated walk path with new point`);
             }
         } else {
             // Add to false duration counter
             deviceTracker.falseDuration += timeSinceLastPoint;
             
-            // Log when movement stops
-            if (deviceTracker.movementStartTime) {
-                console.log(`Device ${deviceImei}: Movement stopped, starting idle timer`);
-                deviceTracker.movementStartTime = null; // Reset movement start time since movement has stopped
+            // If we've been inactive for 1 minute, stop tracking and reset everything
+            const IDLE_THRESHOLD = 1 * 60 * 1000; // 1 minute in milliseconds
+            if (deviceTracker.falseDuration >= IDLE_THRESHOLD) {
+                if (deviceTracker.isSaving) {
+                    console.log(`🛑 Device ${deviceImei}: Stopped tracking movement after ${Math.round(deviceTracker.falseDuration/1000)} seconds of inactivity`);
+                    deviceTracker.isSaving = false;
+                    deviceTracker.movementStartTime = null;  // Reset movement start time
+                    deviceTracker.falseDuration = 0;
+                    // Clear any pending points when stopping tracking
+                    pendingPoints[deviceImei] = [];
+                }
             }
             
-            // Changed from 1 min to 5 min (300000ms) before stopping tracking
-            const IDLE_THRESHOLD = 5 * 60 * 1000; // 5 minutes in milliseconds
-            
-            // Check if we should stop saving (5+ minutes of false)
-            if (deviceTracker.isSaving && deviceTracker.falseDuration >= IDLE_THRESHOLD) {
-                console.log(`Device ${deviceImei}: Stopping track after ${Math.round(deviceTracker.falseDuration/1000)} seconds of inactivity`);
-                deviceTracker.isSaving = false;
-                deviceTracker.falseDuration = 0; // Reset false duration after stopping
-                
-                // Finalize the walk path by marking it as inactive
-                await dbUpdateWalkPath(
-                    deviceImei,
-                    [],
-                    false,
-                    timestamp
-                );
-                
-                // Clear any remaining pending points for this device
-                pendingPoints[deviceImei] = [];
+            // If we're saving and get a non-moving status, don't add the point to the walk path
+            if (deviceTracker.isSaving) {
+                console.log(`⏸️ Device ${deviceImei}: Skipping point - device is not moving`);
             }
         }
         
-        // Always update lastMovement timestamp
+        // Update last movement time
         deviceTracker.lastMovement = timestamp;
     }
 }
@@ -286,11 +321,13 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
         // Validate that we have at least one valid point
         if (!points || points.length === 0 || 
             !points[0].latitude || !points[0].longitude) {
-            console.log(`Skipping walk creation for device ${deviceImei}: No valid coordinates`);
+            console.log(`❌ Skipping walk creation for device ${deviceImei}: No valid coordinates`);
             return;
         }
         
-        console.log(`Creating walk path for device ${deviceImei} with ${points.length} points`);
+        console.log(`📝 Creating walk path for device ${deviceImei} with ${points.length} points`);
+        console.log(`📍 First point: ${points[0].latitude}, ${points[0].longitude}`);
+        console.log(`⏰ Start time: ${new Date(points[0].timestamp).toLocaleTimeString()}`);
         
         // Create a new walk path with all the pending points
         const walkPath = await saveWalkPath(
@@ -302,12 +339,13 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
         );
         
         if (walkPath) {
-            console.log(`Started new walk for device ${deviceImei} with ${points.length} initial points`);
+            console.log(`✅ Started new walk for device ${deviceImei} with ${points.length} initial points`);
+            console.log(`🆔 Walk path ID: ${walkPath._id}`);
         } else {
-            console.error(`Failed to create walk path for device ${deviceImei}`);
+            console.error(`❌ Failed to create walk path for device ${deviceImei}`);
         }
     } catch (error) {
-        console.error(`Error creating walk path with initial points: ${error.message}`);
+        console.error(`❌ Error creating walk path with initial points: ${error.message}`);
     }
 }
 
@@ -317,14 +355,17 @@ async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, t
         // Skip if latitude or longitude is missing
         if (positionLatitude === undefined || positionLatitude === null || 
             positionLongitude === undefined || positionLongitude === null) {
-            console.log(`Skipping walk update for device ${deviceImei}: Missing coordinates`);
+            console.log(`❌ Skipping walk update for device ${deviceImei}: Missing coordinates`);
             return;
         }
+        
+        console.log(`📍 Updating walk path for device ${deviceImei} with point: ${positionLatitude}, ${positionLongitude}`);
+        console.log(`⏰ Time: ${new Date(timestamp).toLocaleTimeString()}`);
         
         // Get the current walk path
         const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
         if (!deviceInfo) {
-            console.error(`Cannot update walk path: Device ${deviceImei} not found`);
+            console.error(`❌ Cannot update walk path: Device ${deviceImei} not found`);
             return;
         }
         
@@ -335,8 +376,6 @@ async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, t
             timestamp: timestamp
         };
         
-        console.log(`Updating walk path for device ${deviceImei} with new point: ${positionLatitude}, ${positionLongitude}`);
-        
         // Update the walk path
         const updatedWalkPath = await dbUpdateWalkPath(
             deviceImei,
@@ -346,12 +385,13 @@ async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, t
         );
         
         if (updatedWalkPath) {
-            console.log(`Updated walk path for device ${deviceImei} with new point`);
+            console.log(`✅ Updated walk path for device ${deviceImei} with new point`);
+            console.log(`🆔 Walk path ID: ${updatedWalkPath._id}`);
         } else {
-            console.error(`Failed to update walk path for device ${deviceImei}`);
+            console.error(`❌ Failed to update walk path for device ${deviceImei}`);
         }
     } catch (error) {
-        console.error(`Error updating walk path: ${error.message}`);
+        console.error(`❌ Error updating walk path: ${error.message}`);
     }
 }
 

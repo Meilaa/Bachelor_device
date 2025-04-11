@@ -171,12 +171,14 @@ async function saveWalkPath(deviceId, points, isActive, startTime, endTime) {
             for (let i = 1; i < points.length; i++) {
                 const prevPoint = points[i-1];
                 const currPoint = points[i];
-                totalDistance += calculateDistance(
+                const distance = calculateDistance(
                     prevPoint.latitude, 
                     prevPoint.longitude, 
                     currPoint.latitude, 
                     currPoint.longitude
                 );
+                totalDistance += distance;
+                console.log(`📏 Distance between points ${i-1} and ${i}: ${Math.round(distance)}m`);
             }
             
             // Calculate duration in seconds
@@ -191,18 +193,18 @@ async function saveWalkPath(deviceId, points, isActive, startTime, endTime) {
         const walkPath = new WalkPath({
             device: deviceInfo._id,
             isActive: isActive,
-            startTime: startTime,
-            endTime: endTime,
+            startTime: startTime || points[0].timestamp,
+            endTime: endTime || points[points.length - 1].timestamp,
             coordinates: points,
             distance: Math.round(totalDistance),
             duration: durationInSeconds
         });
 
         const savedWalkPath = await walkPath.save();
-        console.log(`Saved walk path for device ${deviceId} with ${points.length} points, distance: ${Math.round(totalDistance)}m, duration: ${durationInMinutes} min`);
+        console.log(`✅ Saved walk path for device ${deviceId} with ID: ${savedWalkPath._id}`);
         return savedWalkPath;
     } catch (error) {
-        console.error(`Error saving walk path: ${error.message}`);
+        console.error(`❌ Error saving walk path: ${error.message}`);
         return null;
     }
 }
@@ -252,22 +254,20 @@ async function updateWalkPath(deviceId, points, isActive, endTime) {
             // Calculate duration in seconds
             durationInSeconds = Math.floor((activeWalkPath.coordinates[activeWalkPath.coordinates.length - 1].timestamp - activeWalkPath.coordinates[0].timestamp) / 1000);
         }
-        
-        // Convert duration to minutes (rounded to 1 decimal place)
-        const durationInMinutes = Math.round(durationInSeconds / 60 * 10) / 10;
-        
+
         // Update walk path properties
-        activeWalkPath.isActive = isActive;
-        activeWalkPath.endTime = endTime || activeWalkPath.coordinates[activeWalkPath.coordinates.length - 1].timestamp;
         activeWalkPath.distance = Math.round(totalDistance);
         activeWalkPath.duration = durationInSeconds;
-        
-        console.log(`Updated walk path for device ${deviceId}: ${activeWalkPath.coordinates.length} points, ${Math.round(totalDistance)}m distance, ${durationInMinutes} min duration`);
-        
+        activeWalkPath.isActive = isActive;
+        if (endTime) {
+            activeWalkPath.endTime = endTime;
+        }
+
         const updatedWalkPath = await activeWalkPath.save();
+        console.log(`✅ Updated walk path ${updatedWalkPath._id} for device ${deviceId}`);
         return updatedWalkPath;
     } catch (error) {
-        console.error(`Error updating walk path: ${error.message}`);
+        console.error(`❌ Error updating walk path: ${error.message}`);
         return null;
     }
 }
