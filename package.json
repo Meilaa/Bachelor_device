@@ -4,7 +4,8 @@
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "mongoose": "^8.13.2",
-    "path": "^0.12.7"
+    "path": "^0.12.7",
+    "uuid": "^11.1.0"
   },
   "scripts": {
     "start": "node index.js"

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
+const { calculateDistance } = require('./utils/geofenceUtils');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/device_tracking';
 
@@ -28,9 +29,24 @@ const deviceDataSchema = new mongoose.Schema({
     positionLongitude: { type: Number, required: true }
 }, { timestamps: true });
 
+const walkPathSchema = new mongoose.Schema({
+    device: { type: mongoose.Schema.Types.ObjectId, ref: 'Device', required: true },
+    isActive: { type: Boolean, default: true },
+    startTime: { type: Date, required: true },
+    endTime: { type: Date },
+    coordinates: [{
+        latitude: { type: Number, required: true },
+        longitude: { type: Number, required: true },
+        timestamp: { type: Date, required: true }
+    }],
+    distance: { type: Number },
+    duration: { type: Number }
+}, { timestamps: true });
+
 // Create models
 const Device = mongoose.model('Device', deviceSchema);
 const DeviceData = mongoose.model('DeviceData', deviceDataSchema);
+const WalkPath = mongoose.model('WalkPath', walkPathSchema);
 
 // Function to connect to MongoDB
 async function connectToDatabase() {
@@ -60,7 +76,8 @@ async function getDeviceInfoByDeviceId(deviceId) {
         return {
             deviceId: device.deviceId,
             userId: device.userId,
-            animalId: device.animalId
+            animalId: device.animalId,
+            _id: device._id // Add this to get the MongoDB _id
         };
     } catch (error) {
         console.error(`Error fetching device info for device ID ${deviceId}:`, error);
@@ -134,10 +151,134 @@ async function saveDeviceData(deviceId, records) {
     }
 }
 
+// Function to save walk path
+async function saveWalkPath(deviceId, points, isActive, startTime, endTime) {
+    try {
+        console.log(`Attempting to save walk path for device ${deviceId} with ${points.length} points`);
+        
+        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+        if (!deviceInfo) {
+            console.error(`Cannot save walk path: Device ${deviceId} not found`);
+            return null;
+        }
+
+        // Calculate distance and duration
+        let totalDistance = 0;
+        let durationInSeconds = 0;
+        
+        if (points.length > 1) {
+            // Calculate total distance
+            for (let i = 1; i < points.length; i++) {
+                const prevPoint = points[i-1];
+                const currPoint = points[i];
+                totalDistance += calculateDistance(
+                    prevPoint.latitude, 
+                    prevPoint.longitude, 
+                    currPoint.latitude, 
+                    currPoint.longitude
+                );
+            }
+            
+            // Calculate duration in seconds
+            durationInSeconds = Math.floor((points[points.length - 1].timestamp - points[0].timestamp) / 1000);
+        }
+        
+        // Convert duration to minutes (rounded to 1 decimal place)
+        const durationInMinutes = Math.round(durationInSeconds / 60 * 10) / 10;
+        
+        console.log(`Walk path for device ${deviceId}: ${points.length} points, ${Math.round(totalDistance)}m distance, ${durationInMinutes} min duration`);
+        
+        const walkPath = new WalkPath({
+            device: deviceInfo._id,
+            isActive: isActive,
+            startTime: startTime,
+            endTime: endTime,
+            coordinates: points,
+            distance: Math.round(totalDistance),
+            duration: durationInSeconds
+        });
+
+        const savedWalkPath = await walkPath.save();
+        console.log(`Saved walk path for device ${deviceId} with ${points.length} points, distance: ${Math.round(totalDistance)}m, duration: ${durationInMinutes} min`);
+        return savedWalkPath;
+    } catch (error) {
+        console.error(`Error saving walk path: ${error.message}`);
+        return null;
+    }
+}
+
+// Function to update walk path
+async function updateWalkPath(deviceId, points, isActive, endTime) {
+    try {
+        console.log(`Attempting to update walk path for device ${deviceId} with ${points.length} points`);
+        
+        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+        if (!deviceInfo) {
+            console.error(`Cannot update walk path: Device ${deviceId} not found`);
+            return null;
+        }
+
+        // Find the active walk path for this device
+        const activeWalkPath = await WalkPath.findOne({ 
+            device: deviceInfo._id, 
+            isActive: true 
+        });
+
+        if (!activeWalkPath) {
+            console.error(`No active walk path found for device ${deviceId}`);
+            return null;
+        }
+
+        // Update the walk path
+        activeWalkPath.coordinates = [...activeWalkPath.coordinates, ...points];
+        
+        // Recalculate distance and duration
+        let totalDistance = 0;
+        let durationInSeconds = 0;
+        
+        if (activeWalkPath.coordinates.length > 1) {
+            // Calculate total distance
+            for (let i = 1; i < activeWalkPath.coordinates.length; i++) {
+                const prevPoint = activeWalkPath.coordinates[i-1];
+                const currPoint = activeWalkPath.coordinates[i];
+                totalDistance += calculateDistance(
+                    prevPoint.latitude, 
+                    prevPoint.longitude, 
+                    currPoint.latitude, 
+                    currPoint.longitude
+                );
+            }
+            
+            // Calculate duration in seconds
+            durationInSeconds = Math.floor((activeWalkPath.coordinates[activeWalkPath.coordinates.length - 1].timestamp - activeWalkPath.coordinates[0].timestamp) / 1000);
+        }
+        
+        // Convert duration to minutes (rounded to 1 decimal place)
+        const durationInMinutes = Math.round(durationInSeconds / 60 * 10) / 10;
+        
+        // Update walk path properties
+        activeWalkPath.isActive = isActive;
+        activeWalkPath.endTime = endTime || activeWalkPath.coordinates[activeWalkPath.coordinates.length - 1].timestamp;
+        activeWalkPath.distance = Math.round(totalDistance);
+        activeWalkPath.duration = durationInSeconds;
+        
+        console.log(`Updated walk path for device ${deviceId}: ${activeWalkPath.coordinates.length} points, ${Math.round(totalDistance)}m distance, ${durationInMinutes} min duration`);
+        
+        const updatedWalkPath = await activeWalkPath.save();
+        return updatedWalkPath;
+    } catch (error) {
+        console.error(`Error updating walk path: ${error.message}`);
+        return null;
+    }
+}
+
 module.exports = {
     connectToDatabase,
     saveDeviceData,
     getDeviceInfoByDeviceId,
+    saveWalkPath,
+    updateWalkPath,
     Device,
-    DeviceData
+    DeviceData,
+    WalkPath
 }; 
