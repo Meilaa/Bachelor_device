@@ -251,16 +251,17 @@ async function processWalkTracking(deviceImei, record) {
         
         console.log(`📍 Using coordinates: ${lat}, ${lon}`);
         
-        // Check movement status directly from the record
-        const isMoving = record.movementStatus || 
-               (record.ioElements && record.ioElements.some(io => io.id === 240 && io.value === 1));
-        console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus}`);
+        // Check movement status - use speed as an indicator if movementStatus is undefined
+        const isMoving = record.movementStatus !== undefined ? record.movementStatus : 
+                       (record.positionSpeed && record.positionSpeed > 1); // Consider moving if speed > 1 km/h
+        
+        console.log(`🔍 Movement check - Status: ${isMoving}, Speed: ${record.positionSpeed}`);
         console.log(`📊 Record details:`, {
             timestamp: new Date(record.timestamp).toLocaleTimeString(),
             latitude: lat,
             longitude: lon,
             movementStatus: record.movementStatus,
-            ioElements: record.ioElements
+            speed: record.positionSpeed
         });
         
         if (isMoving) {

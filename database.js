@@ -284,6 +284,42 @@ async function updateWalkPath(deviceId, points, isActive, endTime) {
                 null
             );
         }
+
+        // Update the existing walk path
+        activeWalkPath.coordinates.push(...validPoints);
+        activeWalkPath.isActive = isActive;
+        if (endTime) {
+            activeWalkPath.endTime = endTime;
+        }
+
+        // Calculate new total distance
+        let totalDistance = activeWalkPath.distance || 0;
+        if (validPoints.length > 1) {
+            for (let i = 1; i < validPoints.length; i++) {
+                const prevPoint = validPoints[i-1];
+                const currPoint = validPoints[i];
+                const distance = calculateDistance(
+                    prevPoint.latitude, 
+                    prevPoint.longitude, 
+                    currPoint.latitude, 
+                    currPoint.longitude
+                );
+                totalDistance += distance;
+            }
+        }
+
+        // Update duration
+        const startTime = activeWalkPath.startTime;
+        const lastPointTime = validPoints[validPoints.length - 1].timestamp;
+        const durationInSeconds = Math.floor((lastPointTime - startTime) / 1000);
+
+        // Update the walk path
+        activeWalkPath.distance = Math.round(totalDistance);
+        activeWalkPath.duration = durationInSeconds;
+
+        const updatedWalkPath = await activeWalkPath.save();
+        console.log(`✅ Updated walk path for device ${deviceId} with ${validPoints.length} new points`);
+        return updatedWalkPath;
     } catch (error) {
         console.error(`❌ Error updating walk path: ${error.message}`);
         return null;
