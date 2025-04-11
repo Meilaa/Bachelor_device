@@ -233,9 +233,16 @@ async function processWalkTracking(deviceImei, record) {
                                record.longitude !== null;
     
     if (hasValidCoordinates) {
-        // Check movement status from the record
-        const isMoving = record.movementStatus === true || record.movement === true;
-        console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus || record.movement}`);
+        // Check movement status directly from the record
+        const isMoving = record.movementStatus === true;
+        console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus}`);
+        console.log(`📊 Record details:`, {
+            timestamp: new Date(record.timestamp).toLocaleTimeString(),
+            latitude: record.latitude,
+            longitude: record.longitude,
+            movementStatus: record.movementStatus,
+            ioElements: record.ioElements
+        });
         
         if (isMoving) {
             // Reset false duration counter when movement is true
@@ -259,6 +266,7 @@ async function processWalkTracking(deviceImei, record) {
             const movementDuration = timestamp - deviceTracker.movementStartTime;
             
             console.log(`⏱️ Device ${deviceImei}: Movement duration: ${Math.round(movementDuration/1000)} seconds`);
+            console.log(`📈 Pending points: ${pendingPoints[deviceImei].length}`);
             
             // If not already saving and we've been moving for 5+ minutes, start saving
             if (!deviceTracker.isSaving && movementDuration >= MOVEMENT_THRESHOLD) {
