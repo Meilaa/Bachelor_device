@@ -236,80 +236,92 @@ async function saveWalkPath(deviceId, points, isActive, startTime, endTime) {
     }
 }
 
-// Function to update an existing walk path with new points
-async function updateWalkPath(deviceImei, points, isActive = true, endTime = null) {
+// Function to update walk path
+async function updateWalkPath(deviceId, points, isActive, endTime) {
     try {
-        // Get the device info
-        const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
-        if (!deviceInfo) {
-            console.error(`❌ Cannot update walk path: Device ${deviceImei} not found`);
-            return null;
-        }
+        console.log(`Attempting to update walk path for device ${deviceId} with ${Array.isArray(points) ? points.length : 1} points`);
+        
+        // Convert single point to array if needed
+        const pointsArray = Array.isArray(points) ? points : [{
+            latitude: points.latitude || points,
+            longitude: points.longitude || arguments[2],
+            timestamp: points.timestamp || arguments[3] || new Date()
+        }];
 
-        // Find the active walk path for this device
-        let activeWalkPath = await WalkPath.findOne({
-            device: deviceInfo._id,
-            isActive: true
-        });
-
-        // If no active walk path exists, create a new one
-        if (!activeWalkPath) {
-            console.log(`📝 No active walk path found for device ${deviceImei}, creating new one`);
-            activeWalkPath = await saveWalkPath(deviceImei, points, isActive, points[0].timestamp, endTime);
-            if (!activeWalkPath) {
-                console.error(`❌ Failed to create new walk path for device ${deviceImei}`);
-                return null;
-            }
-            console.log(`✅ Created new walk path for device ${deviceImei}`);
-            return activeWalkPath;
-        }
-
-        // Filter out any points with invalid coordinates
-        const validPoints = points.filter(point => 
+        // Ensure points is an array and contains valid lat/long
+        const validPoints = pointsArray.filter(point => 
+            point && typeof point === 'object' && 
             point.latitude !== undefined && point.latitude !== null && point.latitude !== 0 &&
             point.longitude !== undefined && point.longitude !== null && point.longitude !== 0
         );
 
         if (validPoints.length === 0) {
-            console.log(`⚠️ No valid points to add to walk path for device ${deviceImei}`);
-            return activeWalkPath;
+            console.log(`❌ No valid points to update walk path for device ${deviceId}`);
+            return null;
         }
-
-        // Calculate distance between points
-        let totalDistance = activeWalkPath.distance || 0;
-        for (let i = 0; i < validPoints.length - 1; i++) {
-            const point1 = validPoints[i];
-            const point2 = validPoints[i + 1];
-            totalDistance += calculateDistance(
-                point1.latitude, point1.longitude,
-                point2.latitude, point2.longitude
-            );
-        }
-
-        // Update the walk path
-        const updatedWalkPath = await WalkPath.findOneAndUpdate(
-            { _id: activeWalkPath._id },
-            {
-                $push: { coordinates: { $each: validPoints } },
-                isActive: isActive,
-                endTime: endTime || activeWalkPath.endTime,
-                distance: totalDistance,
-                duration: endTime ? 
-                    Math.round((endTime - activeWalkPath.startTime) / 1000) : 
-                    Math.round((validPoints[validPoints.length - 1].timestamp - activeWalkPath.startTime) / 1000)
-            },
-            { new: true }
-        );
-
-        if (!updatedWalkPath) {
-            console.error(`❌ Failed to update walk path for device ${deviceImei}`);
+        
+        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+        if (!deviceInfo) {
+            console.error(`Cannot update walk path: Device ${deviceId} not found`);
             return null;
         }
 
-        console.log(`✅ Updated walk path for device ${deviceImei} with ${validPoints.length} new points`);
+        // Find the active walk path for this device
+        const activeWalkPath = await WalkPath.findOne({ 
+            device: deviceInfo._id, 
+            isActive: true 
+        });
+
+        if (!activeWalkPath) {
+            console.error(`No active walk path found for device ${deviceId}`);
+            // Create new walk path since none exists
+            console.log(`Creating new walk path instead`);
+            return await saveWalkPath(
+                deviceId,
+                validPoints,
+                true,
+                validPoints[0].timestamp,
+                null
+            );
+        }
+
+        // Update the existing walk path
+        activeWalkPath.coordinates.push(...validPoints);
+        activeWalkPath.isActive = isActive;
+        if (endTime) {
+            activeWalkPath.endTime = endTime;
+        }
+
+        // Calculate new total distance
+        let totalDistance = activeWalkPath.distance || 0;
+        if (validPoints.length > 1) {
+            for (let i = 1; i < validPoints.length; i++) {
+                const prevPoint = validPoints[i-1];
+                const currPoint = validPoints[i];
+                const distance = calculateDistance(
+                    prevPoint.latitude, 
+                    prevPoint.longitude, 
+                    currPoint.latitude, 
+                    currPoint.longitude
+                );
+                totalDistance += distance;
+            }
+        }
+
+        // Update duration
+        const startTime = activeWalkPath.startTime;
+        const lastPointTime = validPoints[validPoints.length - 1].timestamp;
+        const durationInSeconds = Math.floor((lastPointTime - startTime) / 1000);
+
+        // Update the walk path
+        activeWalkPath.distance = Math.round(totalDistance);
+        activeWalkPath.duration = durationInSeconds;
+
+        const updatedWalkPath = await activeWalkPath.save();
+        console.log(`✅ Updated walk path for device ${deviceId} with ${validPoints.length} new points`);
         return updatedWalkPath;
     } catch (error) {
-        console.error(`❌ Error updating walk path for device ${deviceImei}:`, error.message);
+        console.error(`❌ Error updating walk path: ${error.message}`);
         return null;
     }
 }
