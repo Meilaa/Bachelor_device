@@ -19,7 +19,7 @@ const deviceDataSchema = new mongoose.Schema({
     deviceName: { type: String },
     batteryLevel: { type: Number, default: 0 },
     gnssStatus: { type: Boolean, default: false },
-    movementStatus: { type: Boolean, default: false },
+    movementStatus: { type: Boolean, default: null },
     positionAltitude: { type: Number },
     positionDirection: { type: Number },
     positionSpeed: { type: Number },
@@ -140,7 +140,7 @@ async function saveDeviceData(deviceId, records) {
             batteryLevel: latestRecord.batteryLevel || 0,
             deviceName: deviceDoc.name || deviceId,
             gnssStatus: latestRecord.gnssStatus,
-            movementStatus: latestRecord.movementStatus || latestRecord.movement,
+            movementStatus: determineMovementStatus(latestRecord), // New helper function
             positionAltitude: latestRecord.positionAltitude || latestRecord.altitude,
             positionDirection: latestRecord.positionDirection || latestRecord.angle,
             positionSpeed: latestRecord.positionSpeed || latestRecord.speed,
@@ -165,6 +165,19 @@ async function saveDeviceData(deviceId, records) {
         console.error('Error saving device data:', error);
         return null;
     }
+}
+function determineMovementStatus(record) {
+    // Explicit movement status takes highest priority
+    if (record.movementStatus !== undefined) return record.movementStatus;
+    
+    // Legacy 'movement' field
+    if (record.movement !== undefined) return record.movement;
+    
+    // Fallback to speed-based detection if available
+    if (record.positionSpeed !== undefined) return record.positionSpeed > 1;
+    
+    // If no movement data at all, return null to indicate unknown
+    return null;
 }
 
 // Function to save walk path
