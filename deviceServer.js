@@ -17,32 +17,15 @@ const DEBUG_LOG = true;
 // Track server start time
 const SERVER_START_TIME = Date.now();
 
-// List of IPs to block
-const BLOCKED_IPS = ['::ffff:10.244.33.1', '10.244.33.1'];
-
 // Track active devices and their movement
 const activeDevices = new Map();
 const movementTracker = {};
 const pendingPoints = {};
 
-// Function to clean IP addresses
-function cleanIP(ip) {
-    return ip.replace('::ffff:', '') // Remove IPv6 prefix
-            .replace(/^10\.244\.\d+\.\d+$/, '[internal]'); // Mask Kubernetes internal IPs
-}
-
 // Create TCP server
 const server = net.createServer((socket) => {
     const clientIP = socket.remoteAddress;
-    const cleanIPAddress = cleanIP(clientIP);
     
-    // Check if this IP is in the blocklist
-    if (BLOCKED_IPS.includes(clientIP)) {
-        console.log(`🚫 Blocking connection from banned IP: ${cleanIPAddress}`);
-        socket.destroy();
-        return;
-    }
-
     let dataBuffer = Buffer.alloc(0);
     let deviceImei = null;
     let lastActivity = Date.now();
@@ -95,7 +78,7 @@ const server = net.createServer((socket) => {
             activeDevices.set(deviceImei, {
                 socket,
                 imei: deviceImei,
-                ip: cleanIPAddress,
+                ip: clientIP,
                 connectedAt: new Date(),
                 lastActivity: new Date()
             });
@@ -116,7 +99,7 @@ const server = net.createServer((socket) => {
                 console.log(`🆕 Initialized pending points array for ${deviceImei}`);
             }
 
-            socket.write(Buffer.from([0x01]));
+            safeSocketWrite(socket, Buffer.from([0x01]), deviceImei);
             const imeiLength = dataBuffer.readUInt16BE(0);
             dataBuffer = dataBuffer.slice(2 + imeiLength);
 
@@ -211,7 +194,7 @@ const server = net.createServer((socket) => {
 
                             const ackBuffer = Buffer.alloc(4);
                             ackBuffer.writeUInt32BE(records.length, 0);
-                            socket.write(ackBuffer);
+                            safeSocketWrite(socket, ackBuffer, deviceImei);
                         }
 
                         dataBuffer = dataBuffer.slice(totalLength);
@@ -399,23 +382,23 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
 }
 
 // Helper function to update WalkPath when movement is detected
+// Modified updateWalkPath function with better error handling and retry logic
 async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, timestamp) {
     try {
         // Skip if latitude or longitude is missing or zero
         if (positionLatitude === undefined || positionLatitude === null || positionLatitude === 0 || 
             positionLongitude === undefined || positionLongitude === null || positionLongitude === 0) {
             console.log(`❌ Skipping walk update for device ${deviceImei}: Missing or invalid coordinates`);
-            return;
+            return null;
         }
         
-        console.log(`📍 Updating walk path for device ${deviceImei} with point: ${positionLatitude}, ${positionLongitude}`);
-        console.log(`⏰ Time: ${new Date(timestamp).toLocaleTimeString()}`);
+        console.log(`📍 Attempting to update walk path for device ${deviceImei} with point: ${positionLatitude}, ${positionLongitude}`);
         
         // Get the current walk path
         const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
         if (!deviceInfo) {
             console.error(`❌ Cannot update walk path: Device ${deviceImei} not found`);
-            return;
+            return null;
         }
         
         // Create a new point
@@ -425,22 +408,50 @@ async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, t
             timestamp: timestamp
         };
         
-        // Update the walk path
-        const updatedWalkPath = await dbUpdateWalkPath(
-            deviceImei,
-            [newPoint],
-            true,
-            null
-        );
+        // Try to find active walk path
+        const activeWalkPath = await WalkPath.findOne({ 
+            device: deviceInfo._id, 
+            isActive: true 
+        });
         
-        if (updatedWalkPath) {
-            console.log(`✅ Updated walk path for device ${deviceImei} with new point`);
-            console.log(`🆔 Walk path ID: ${updatedWalkPath._id}`);
-        } else {
-            console.error(`❌ Failed to update walk path for device ${deviceImei}`);
+        // If no active walk path exists, create one
+        if (!activeWalkPath) {
+            console.log(`📝 No active walk path found for device ${deviceImei}, creating a new one...`);
+            return await saveWalkPath(
+                deviceImei,
+                [newPoint],
+                true,
+                timestamp,
+                null
+            );
         }
+        
+        // Add point to existing walk path
+        activeWalkPath.coordinates.push(newPoint);
+        
+        // Calculate new distance if this isn't the first point
+        if (activeWalkPath.coordinates.length > 1) {
+            const prevPoint = activeWalkPath.coordinates[activeWalkPath.coordinates.length - 2];
+            const distance = calculateDistance(
+                prevPoint.latitude, 
+                prevPoint.longitude, 
+                newPoint.latitude, 
+                newPoint.longitude
+            );
+            activeWalkPath.distance = (activeWalkPath.distance || 0) + distance;
+        }
+        
+        // Update duration
+        const durationInSeconds = Math.floor((timestamp - activeWalkPath.startTime) / 1000);
+        activeWalkPath.duration = durationInSeconds;
+        
+        // Save the updated walk path
+        const updatedWalkPath = await activeWalkPath.save();
+        console.log(`✅ Successfully updated walk path for device ${deviceImei}`);
+        return updatedWalkPath;
     } catch (error) {
-        console.error(`❌ Error updating walk path: ${error.message}`);
+        console.error(`❌ Error updating walk path for device ${deviceImei}: ${error.message}`);
+        return null;
     }
 }
 
@@ -464,12 +475,25 @@ function parseImeiPacket(buffer) {
     return buffer.toString('ascii', 2, 2 + imeiLength);
 }
 
+// Add this helper function to check if socket is writable
+function isSocketWritable(socket) {
+    return socket && !socket.destroyed && socket.writable;
+}
+
+// Helper function to safely write to socket
+function safeSocketWrite(socket, data, deviceImei) {
+    if (isSocketWritable(socket)) {
+        socket.write(data);
+    } else {
+        console.log(`⚠️ Cannot write to socket for device ${deviceImei}: Socket not writable`);
+    }
+}
+
 // Start server
 async function startServer() {
     try {
         server.listen(DEVICE_PORT, () => {
             console.log(`🚀 Server listening on port ${DEVICE_PORT}`);
-            console.log(`🛡️ Blocking IPs: ${BLOCKED_IPS.map(ip => cleanIP(ip)).join(', ')}`);
         });
     } catch (error) {
         console.error('Failed to start server:', error);
