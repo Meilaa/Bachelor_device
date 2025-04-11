@@ -135,12 +135,15 @@ async function saveDeviceData(deviceId, records) {
         }
 
         // Format the record according to schema
+        const movementStatus = determineMovementStatus(latestRecord);
+        console.log(`🔍 Movement check - Status: ${movementStatus}`);
+
         const formattedRecord = {
             device: deviceDoc._id,
             batteryLevel: latestRecord.batteryLevel || 0,
             deviceName: deviceDoc.name || deviceId,
             gnssStatus: latestRecord.gnssStatus,
-            movementStatus: determineMovementStatus(latestRecord), // New helper function
+            movementStatus: movementStatus,
             positionAltitude: latestRecord.positionAltitude || latestRecord.altitude,
             positionDirection: latestRecord.positionDirection || latestRecord.angle,
             positionSpeed: latestRecord.positionSpeed || latestRecord.speed,
