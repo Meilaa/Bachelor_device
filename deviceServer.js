@@ -173,7 +173,8 @@ const server = net.createServer((socket) => {
                                         ...record,
                                         positionLatitude: record.positionLatitude || record.latitude,
                                         positionLongitude: record.positionLongitude || record.longitude,
-                                        movementStatus: record.movementStatus,
+                                        movementStatus: record.movementStatus !== undefined ? record.movementStatus : 
+                                                      (record.positionSpeed && record.positionSpeed > 1), // Use speed as fallback
                                         positionSpeed: record.positionSpeed,
                                         positionValid: record.positionValid,
                                         positionAltitude: record.positionAltitude,
