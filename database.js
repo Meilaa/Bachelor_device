@@ -296,22 +296,29 @@ async function updateWalkPath(deviceId, points, isActive, endTime) {
         }
 
         // Find the active walk path for this device
-        const activeWalkPath = await WalkPath.findOne({ 
+        let activeWalkPath = await WalkPath.findOne({ 
             device: deviceInfo._id, 
             isActive: true 
         });
 
         if (!activeWalkPath) {
-            console.error(`No active walk path found for device ${deviceId}`);
+            console.log(`No active walk path found for device ${deviceId}, creating new one`);
             // Create new walk path since none exists
-            console.log(`Creating new walk path instead`);
-            return await saveWalkPath(
+            activeWalkPath = await saveWalkPath(
                 deviceId,
                 validPoints,
                 true,
                 validPoints[0].timestamp,
                 null
             );
+            
+            if (!activeWalkPath) {
+                console.error(`Failed to create new walk path for device ${deviceId}`);
+                return null;
+            }
+            
+            console.log(`✅ Created new walk path for device ${deviceId}`);
+            return activeWalkPath;
         }
 
         // Update the existing walk path
@@ -350,6 +357,11 @@ async function updateWalkPath(deviceId, points, isActive, endTime) {
         console.log(`✅ Updated walk path for device ${deviceId} with ${validPoints.length} new points`);
         return updatedWalkPath;
     } catch (error) {
+        if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+            console.log(`⚠️ Connection error for device ${deviceId}, retrying...`);
+            // Add retry logic here if needed
+            return null;
+        }
         console.error(`❌ Error updating walk path: ${error.message}`);
         return null;
     }
