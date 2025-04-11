@@ -111,7 +111,6 @@ const server = net.createServer((socket) => {
             }
 
             // Initialize pending points array
-            // In processWalkTracking, add this check:
             if (!pendingPoints[deviceImei]) {
                 pendingPoints[deviceImei] = [];
                 console.log(`🆕 Initialized pending points array for ${deviceImei}`);
@@ -133,8 +132,8 @@ const server = net.createServer((socket) => {
                     deviceImei: deviceImei,
                     deviceId: deviceImei,
                     timestamp: jsonData.timestamp,
-                    latitude: jsonData.positionLatitude,
-                    longitude: jsonData.positionLongitude,
+                    positionLatitude: jsonData.positionLatitude || jsonData.latitude,
+                    positionLongitude: jsonData.positionLongitude || jsonData.longitude,
                     movementStatus: jsonData.movementStatus,
                     ioElements: [{
                         id: 240,
@@ -228,21 +227,38 @@ async function processWalkTracking(deviceImei, record) {
     const timeSinceLastPoint = deviceTracker.lastMovement ? 
         (timestamp - deviceTracker.lastMovement) : 0;
     
-    // Skip walk tracking if latitude or longitude is missing
-    const hasValidCoordinates = record.latitude !== undefined && 
-                               record.latitude !== null && 
-                               record.longitude !== undefined && 
-                               record.longitude !== null;
+    // Debug the record to see what data we're getting
+    console.log(`🔍 Processing record for ${deviceImei}:`, {
+        timestamp: new Date(record.timestamp).toLocaleTimeString(),
+        positionLatitude: record.positionLatitude,
+        positionLongitude: record.positionLongitude,
+        latitude: record.latitude,
+        longitude: record.longitude,
+        movementStatus: record.movementStatus
+    });
+    
+    // Skip walk tracking if latitude or longitude is missing or zero
+    const hasValidCoordinates = 
+        ((record.positionLatitude !== undefined && record.positionLatitude !== null && record.positionLatitude !== 0) || 
+         (record.latitude !== undefined && record.latitude !== null && record.latitude !== 0)) && 
+        ((record.positionLongitude !== undefined && record.positionLongitude !== null && record.positionLongitude !== 0) ||
+         (record.longitude !== undefined && record.longitude !== null && record.longitude !== 0));
     
     if (hasValidCoordinates) {
+        // Use the appropriate coordinate fields (handle both naming conventions)
+        const lat = record.positionLatitude || record.latitude;
+        const lon = record.positionLongitude || record.longitude;
+        
+        console.log(`📍 Using coordinates: ${lat}, ${lon}`);
+        
         // Check movement status directly from the record
         const isMoving = record.movementStatus || 
                (record.ioElements && record.ioElements.some(io => io.id === 240 && io.value === 1));
         console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus}`);
         console.log(`📊 Record details:`, {
             timestamp: new Date(record.timestamp).toLocaleTimeString(),
-            latitude: record.latitude,
-            longitude: record.longitude,
+            latitude: lat,
+            longitude: lon,
             movementStatus: record.movementStatus,
             ioElements: record.ioElements
         });
@@ -259,8 +275,8 @@ async function processWalkTracking(deviceImei, record) {
             
             // Store this point in the pending points regardless of tracking status
             pendingPoints[deviceImei].push({
-                latitude: record.latitude,
-                longitude: record.longitude,
+                latitude: lat,
+                longitude: lon,
                 timestamp: timestamp
             });
             
@@ -270,6 +286,7 @@ async function processWalkTracking(deviceImei, record) {
             
             console.log(`⏱️ Device ${deviceImei}: Movement duration: ${Math.round(movementDuration/1000)} seconds`);
             console.log(`📈 Pending points: ${pendingPoints[deviceImei].length}`);
+            console.log(`🚶‍♂️ Movement tracker state: ${JSON.stringify(deviceTracker)}`);
             
             // If not already saving and we've been moving for 5+ minutes, start saving
             if (!deviceTracker.isSaving && movementDuration >= MOVEMENT_THRESHOLD) {
@@ -281,8 +298,8 @@ async function processWalkTracking(deviceImei, record) {
                     const points = pendingPoints[deviceImei];
                     // Filter out any points with invalid coordinates
                     const validPoints = points.filter(point => 
-                        point.latitude !== undefined && point.latitude !== null && 
-                        point.longitude !== undefined && point.longitude !== null
+                        point.latitude !== undefined && point.latitude !== null && point.latitude !== 0 &&
+                        point.longitude !== undefined && point.longitude !== null && point.longitude !== 0
                     );
                     
                     if (validPoints.length > 0) {
@@ -295,7 +312,7 @@ async function processWalkTracking(deviceImei, record) {
             } else if (deviceTracker.isSaving) {
                 // Save path data if we're in saving mode
                 console.log(`📍 Device ${deviceImei}: Adding point to walk path at ${timestamp.toLocaleTimeString()}`);
-                await updateWalkPath(deviceImei, record.latitude, record.longitude, timestamp);
+                await updateWalkPath(deviceImei, lat, lon, timestamp);
                 console.log(`✅ Device ${deviceImei}: Updated walk path with new point`);
             }
         } else {
@@ -323,6 +340,12 @@ async function processWalkTracking(deviceImei, record) {
         
         // Update last movement time
         deviceTracker.lastMovement = timestamp;
+    } else {
+        console.log(`❌ Skipping walk tracking for device ${deviceImei}: Invalid coordinates: 
+            positionLatitude=${record.positionLatitude}, 
+            positionLongitude=${record.positionLongitude},
+            latitude=${record.latitude}, 
+            longitude=${record.longitude}`);
     }
 }
 
@@ -331,7 +354,8 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
     try {
         // Validate that we have at least one valid point
         if (!points || points.length === 0 || 
-            !points[0].latitude || !points[0].longitude) {
+            !points[0].latitude || !points[0].longitude || 
+            points[0].latitude === 0 || points[0].longitude === 0) {
             console.log(`❌ Skipping walk creation for device ${deviceImei}: No valid coordinates`);
             return;
         }
@@ -363,10 +387,10 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
 // Helper function to update WalkPath when movement is detected
 async function updateWalkPath(deviceImei, positionLatitude, positionLongitude, timestamp) {
     try {
-        // Skip if latitude or longitude is missing
-        if (positionLatitude === undefined || positionLatitude === null || 
-            positionLongitude === undefined || positionLongitude === null) {
-            console.log(`❌ Skipping walk update for device ${deviceImei}: Missing coordinates`);
+        // Skip if latitude or longitude is missing or zero
+        if (positionLatitude === undefined || positionLatitude === null || positionLatitude === 0 || 
+            positionLongitude === undefined || positionLongitude === null || positionLongitude === 0) {
+            console.log(`❌ Skipping walk update for device ${deviceImei}: Missing or invalid coordinates`);
             return;
         }
         
