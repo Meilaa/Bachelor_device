@@ -135,10 +135,12 @@ const server = net.createServer((socket) => {
                     positionLatitude: jsonData.positionLatitude || jsonData.latitude,
                     positionLongitude: jsonData.positionLongitude || jsonData.longitude,
                     movementStatus: jsonData.movementStatus,
-                    ioElements: [{
-                        id: 240,
-                        value: jsonData.movementStatus ? 1 : 0
-                    }]
+                    positionSpeed: jsonData.positionSpeed,
+                    positionValid: jsonData.positionValid,
+                    positionAltitude: jsonData.positionAltitude,
+                    positionDirection: jsonData.positionDirection,
+                    batteryLevel: jsonData.batteryLevel,
+                    gnssStatus: jsonData.gnssStatus
                 };
 
                 // Process walk tracking
@@ -183,7 +185,20 @@ const server = net.createServer((socket) => {
                                 
                                 // Process each record for walk tracking
                                 for (const record of newRecords) {
-                                    await processWalkTracking(deviceImei, record);
+                                    // Ensure we have all necessary fields for walk tracking
+                                    const walkRecord = {
+                                        ...record,
+                                        positionLatitude: record.positionLatitude || record.latitude,
+                                        positionLongitude: record.positionLongitude || record.longitude,
+                                        movementStatus: record.movementStatus,
+                                        positionSpeed: record.positionSpeed,
+                                        positionValid: record.positionValid,
+                                        positionAltitude: record.positionAltitude,
+                                        positionDirection: record.positionDirection,
+                                        batteryLevel: record.batteryLevel,
+                                        gnssStatus: record.gnssStatus
+                                    };
+                                    await processWalkTracking(deviceImei, walkRecord);
                                 }
                                 
                                 try {
@@ -251,17 +266,15 @@ async function processWalkTracking(deviceImei, record) {
         
         console.log(`📍 Using coordinates: ${lat}, ${lon}`);
         
-        // Check movement status - use speed as an indicator if movementStatus is undefined
-        const isMoving = record.movementStatus !== undefined ? record.movementStatus : 
-                       (record.positionSpeed && record.positionSpeed > 1); // Consider moving if speed > 1 km/h
+        // Check movement status directly from the record
+        const isMoving = record.movementStatus === true;
         
-        console.log(`🔍 Movement check - Status: ${isMoving}, Speed: ${record.positionSpeed}`);
+        console.log(`🔍 Movement check - Status: ${isMoving}`);
         console.log(`📊 Record details:`, {
             timestamp: new Date(record.timestamp).toLocaleTimeString(),
             latitude: lat,
             longitude: lon,
-            movementStatus: record.movementStatus,
-            speed: record.positionSpeed
+            movementStatus: record.movementStatus
         });
         
         if (isMoving) {
