@@ -140,7 +140,7 @@ async function saveDeviceData(deviceId, records) {
 
         // Log record details with calculated movement status
         console.log('📊 Record details:', {
-            timestamp: latestRecord.timestamp,
+            timestamp: new Date(timestamp).toLocaleString(),
             latitude: latitude,
             longitude: longitude,
             movementStatus: movementStatus
@@ -157,7 +157,7 @@ async function saveDeviceData(deviceId, records) {
             positionDirection: latestRecord.positionDirection || latestRecord.angle,
             positionSpeed: latestRecord.positionSpeed || latestRecord.speed,
             positionValid: latestRecord.positionValid || (latitude !== 0 && longitude !== 0),
-            timestamp: timestamp,
+            timestamp: new Date(timestamp),
             positionLatitude: latitude,
             positionLongitude: longitude
         };

@@ -164,7 +164,6 @@ const server = net.createServer((socket) => {
                             });
 
                             if (newRecords.length > 0) {
-                                console.log(`📊 Processing ${newRecords.length} new records from ${deviceImei}`);
                                 
                                 // Process each record for walk tracking
                                 for (const record of newRecords) {
@@ -226,16 +225,6 @@ async function processWalkTracking(deviceImei, record) {
     const timeSinceLastPoint = deviceTracker.lastMovement ? 
         (timestamp - deviceTracker.lastMovement) : 0;
     
-    // Debug the record to see what data we're getting
-    console.log(`🔍 Processing record for ${deviceImei}:`, {
-        timestamp: new Date(record.timestamp).toLocaleTimeString(),
-        positionLatitude: record.positionLatitude,
-        positionLongitude: record.positionLongitude,
-        latitude: record.latitude,
-        longitude: record.longitude,
-        movementStatus: record.movementStatus
-    });
-    
     // Skip walk tracking if latitude or longitude is missing or zero
     const hasValidCoordinates = 
         ((record.positionLatitude !== undefined && record.positionLatitude !== null && record.positionLatitude !== 0) || 
@@ -252,14 +241,6 @@ async function processWalkTracking(deviceImei, record) {
         
         // Check movement status directly from the record
         const isMoving = record.movementStatus === true;
-        
-        console.log(`🔍 Movement check - Status: ${isMoving}`);
-        console.log(`📊 Record details:`, {
-            timestamp: new Date(record.timestamp).toLocaleTimeString(),
-            latitude: lat,
-            longitude: lon,
-            movementStatus: record.movementStatus
-        });
         
         if (isMoving) {
             // Reset false duration counter when movement is true
