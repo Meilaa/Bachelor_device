@@ -111,8 +111,10 @@ const server = net.createServer((socket) => {
             }
 
             // Initialize pending points array
+            // In processWalkTracking, add this check:
             if (!pendingPoints[deviceImei]) {
                 pendingPoints[deviceImei] = [];
+                console.log(`🆕 Initialized pending points array for ${deviceImei}`);
             }
 
             socket.write(Buffer.from([0x01]));
@@ -234,7 +236,8 @@ async function processWalkTracking(deviceImei, record) {
     
     if (hasValidCoordinates) {
         // Check movement status directly from the record
-        const isMoving = record.movementStatus === true;
+        const isMoving = record.movementStatus || 
+               (record.ioElements && record.ioElements.some(io => io.id === 240 && io.value === 1));
         console.log(`🔍 Movement check - Status: ${isMoving}, Value: ${record.movementStatus}`);
         console.log(`📊 Record details:`, {
             timestamp: new Date(record.timestamp).toLocaleTimeString(),
