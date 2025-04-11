@@ -173,11 +173,15 @@ function determineMovementStatus(record) {
     // Legacy 'movement' field
     if (record.movement !== undefined) return record.movement;
     
-    // Fallback to speed-based detection if available
-    if (record.positionSpeed !== undefined) return record.positionSpeed > 1;
+    // Use speed to determine movement - consider moving if speed > 0.5 km/h
+    if (record.positionSpeed !== undefined) {
+        // Convert speed to km/h if needed (assuming speed is in m/s)
+        const speedKmh = record.positionSpeed * 3.6;
+        return speedKmh > 0.5;
+    }
     
-    // If no movement data at all, return null to indicate unknown
-    return null;
+    // If no movement data at all, return false to indicate stationary
+    return false;
 }
 
 // Function to save walk path
