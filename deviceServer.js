@@ -254,18 +254,18 @@ async function processWalkTracking(deviceImei, record) {
                 timestamp: timestamp
             });
             
-            // Wait for 2 minutes of continuous movement before starting to save
-            const MOVEMENT_THRESHOLD = 2 * 60 * 1000; // 2 minutes in milliseconds
+            // Wait for 5 minutes of continuous movement before starting to save
+            const MOVEMENT_THRESHOLD = 5 * 60 * 1000; // 5 minutes in milliseconds
             const movementDuration = timestamp - deviceTracker.movementStartTime;
             
             console.log(`⏱️ Device ${deviceImei}: Movement duration: ${Math.round(movementDuration/1000)} seconds`);
             
-            // If not already saving and we've been moving for 2+ minutes, start saving
+            // If not already saving and we've been moving for 5+ minutes, start saving
             if (!deviceTracker.isSaving && movementDuration >= MOVEMENT_THRESHOLD) {
                 deviceTracker.isSaving = true;
                 console.log(`📝 Device ${deviceImei}: Started tracking movement after ${Math.round(movementDuration/1000)} seconds of activity`);
                 
-                // Save all pending points that have been accumulated during the 2-minute period
+                // Save all pending points that have been accumulated during the 5-minute period
                 if (pendingPoints[deviceImei] && pendingPoints[deviceImei].length > 0) {
                     const points = pendingPoints[deviceImei];
                     // Filter out any points with invalid coordinates
@@ -277,7 +277,7 @@ async function processWalkTracking(deviceImei, record) {
                     if (validPoints.length > 0) {
                         console.log(`📊 Device ${deviceImei}: Creating walk path with ${validPoints.length} initial points`);
                         await createWalkPathWithInitialPoints(deviceImei, validPoints);
-                        console.log(`✅ Device ${deviceImei}: Saved ${validPoints.length} buffered points after 2-minute threshold`);
+                        console.log(`✅ Device ${deviceImei}: Saved ${validPoints.length} buffered points after 5-minute threshold`);
                     }
                     pendingPoints[deviceImei] = []; // Clear pending points after saving
                 }
@@ -291,8 +291,8 @@ async function processWalkTracking(deviceImei, record) {
             // Add to false duration counter
             deviceTracker.falseDuration += timeSinceLastPoint;
             
-            // If we've been inactive for 1 minute, stop tracking and reset everything
-            const IDLE_THRESHOLD = 1 * 60 * 1000; // 1 minute in milliseconds
+            // If we've been inactive for 5 minutes, stop tracking and reset everything
+            const IDLE_THRESHOLD = 5 * 60 * 1000; // 5 minutes in milliseconds
             if (deviceTracker.falseDuration >= IDLE_THRESHOLD) {
                 if (deviceTracker.isSaving) {
                     console.log(`🛑 Device ${deviceImei}: Stopped tracking movement after ${Math.round(deviceTracker.falseDuration/1000)} seconds of inactivity`);
