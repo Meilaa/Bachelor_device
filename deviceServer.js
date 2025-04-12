@@ -240,21 +240,13 @@ const server = net.createServer((socket) => {
                                 if (newRecords.length > 0) {
                                     // Process each record for walk tracking
                                     for (const record of newRecords) {
-                                        // Ensure we have all necessary fields for walk tracking
-                                        const walkRecord = {
-                                            ...record,
-                                            positionLatitude: record.positionLatitude || record.latitude,
-                                            positionLongitude: record.positionLongitude || record.longitude,
-                                            movementStatus: record.movementStatus !== undefined ? record.movementStatus : 
-                                                          (record.positionSpeed && record.positionSpeed > 1), // Use speed as fallback
-                                            positionSpeed: record.positionSpeed,
-                                            positionValid: record.positionValid,
-                                            positionAltitude: record.positionAltitude,
-                                            positionDirection: record.positionDirection,
-                                            batteryLevel: record.batteryLevel,
-                                            gnssStatus: record.gnssStatus
-                                        };
-                                        await processWalkTracking(deviceImei, walkRecord);
+                                        // Calculate movement status directly based on speed for consistency
+                                        const movementStatus = record.positionSpeed > 3; // Using 3 km/h as threshold
+                                        
+                                        // Update the record with the calculated movement status
+                                        record.movementStatus = movementStatus;
+                                        
+                                        await processWalkTracking(deviceImei, record);
                                     }
                                     
                                     try {
