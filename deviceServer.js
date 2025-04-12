@@ -325,21 +325,15 @@ async function processWalkTracking(deviceImei, record) {
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
         }
 
-        // If walk path is finished and device is not moving, don't process any more points
-        if (deviceTracker.walkPathFinished && !record.movementStatus) {
-            console.log(`⏹️ Device ${deviceImei}: Walk path finished, ignoring stationary points`);
-            return;
-        }
-
         // Update last point and timestamp
         deviceTracker.lastPoint = { lat, lon, timestamp };
         deviceTracker.lastUpdate = Date.now();
 
-        // Get movement status from the record
-        // Check both movementStatus and movement fields
-        const isMoving = record.movementStatus === true || record.movement === true;
+        // Improved movement detection
+        const speed = record.positionSpeed || 0;
+        const isMoving = speed > 3; // Using 3 km/h as threshold
         
-        console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
+        console.log(`🔍 Device ${deviceImei}: Speed ${speed} km/h, Moving: ${isMoving}`);
         
         if (isMoving) {
             // Reset false duration counter and walk path finished flag
