@@ -26,11 +26,11 @@ const pendingPoints = {};
 const server = net.createServer((socket) => {
     const clientIP = socket.remoteAddress;
     
-    // Initialize buffer and device tracking variables
-    let dataBuffer = Buffer.alloc(0); // Explicit initialization
-    let deviceImei = null;
-    let lastActivity = Date.now();
-    let timeoutHandler = null;
+    // Initialize socket properties
+    socket.dataBuffer = Buffer.alloc(0);
+    socket.deviceImei = null;
+    socket.lastActivity = Date.now();
+    socket.timeoutHandler = null;
 
     // Connection management improvements
     const connectionTimeouts = {};
@@ -40,31 +40,36 @@ const server = net.createServer((socket) => {
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
         try {
-            if (!dataBuffer || dataBuffer.length < 2) return;
+            // Ensure dataBuffer is always initialized
+            if (!socket.dataBuffer) {
+                socket.dataBuffer = Buffer.alloc(0);
+            }
+
+            if (socket.dataBuffer.length < 2) return;
 
             // Check for IMEI packet
-            if (isImeiPacket(dataBuffer)) {
-                deviceImei = parseImeiPacket(dataBuffer);
-                console.log(`📱 Device connected - IMEI: ${deviceImei} at ${new Date().toISOString()}`);
+            if (isImeiPacket(socket.dataBuffer)) {
+                socket.deviceImei = parseImeiPacket(socket.dataBuffer);
+                console.log(`📱 Device connected - IMEI: ${socket.deviceImei} at ${new Date().toISOString()}`);
 
-                const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
+                const deviceInfo = await getDeviceInfoByDeviceId(socket.deviceImei);
                 if (!deviceInfo) {
-                    console.warn(`⚠️ Unknown device: ${deviceImei}. Closing connection.`);
+                    console.warn(`⚠️ Unknown device: ${socket.deviceImei}. Closing connection.`);
                     socket.end();
                     return;
                 }
 
-                activeDevices.set(deviceImei, {
+                activeDevices.set(socket.deviceImei, {
                     socket,
-                    imei: deviceImei,
+                    imei: socket.deviceImei,
                     ip: clientIP,
                     connectedAt: new Date(),
                     lastActivity: new Date()
                 });
 
                 // Initialize movement tracker for this device
-                if (!movementTracker[deviceImei]) {
-                    movementTracker[deviceImei] = {
+                if (!movementTracker[socket.deviceImei]) {
+                    movementTracker[socket.deviceImei] = {
                         lastMovement: new Date(),
                         movementStartTime: null,
                         falseDuration: 0,
@@ -73,26 +78,26 @@ const server = net.createServer((socket) => {
                 }
 
                 // Initialize pending points array
-                if (!pendingPoints[deviceImei]) {
-                    pendingPoints[deviceImei] = [];
-                    console.log(`🆕 Initialized pending points array for ${deviceImei}`);
+                if (!pendingPoints[socket.deviceImei]) {
+                    pendingPoints[socket.deviceImei] = [];
+                    console.log(`🆕 Initialized pending points array for ${socket.deviceImei}`);
                 }
 
-                safeSocketWrite(socket, Buffer.from([0x01]), deviceImei);
-                const imeiLength = dataBuffer.readUInt16BE(0);
-                dataBuffer = dataBuffer.slice(2 + imeiLength);
+                safeSocketWrite(socket, Buffer.from([0x01]), socket.deviceImei);
+                const imeiLength = socket.dataBuffer.readUInt16BE(0);
+                socket.dataBuffer = socket.dataBuffer.slice(2 + imeiLength);
 
-                if (dataBuffer.length > 0) await processBuffer();
+                if (socket.dataBuffer.length > 0) await processBuffer();
             } else {
                 // Try to parse as JSON first
                 try {
-                    const jsonData = JSON.parse(dataBuffer.toString());
-                    console.log(`📦 Received JSON data from ${deviceImei}:`, jsonData);
+                    const jsonData = JSON.parse(socket.dataBuffer.toString());
+                    console.log(`📦 Received JSON data from ${socket.deviceImei}:`, jsonData);
                     
                     // Process the JSON data
                     const record = {
-                        deviceImei: deviceImei,
-                        deviceId: deviceImei,
+                        deviceImei: socket.deviceImei,
+                        deviceId: socket.deviceImei,
                         timestamp: jsonData.timestamp,
                         positionLatitude: jsonData.positionLatitude || jsonData.latitude,
                         positionLongitude: jsonData.positionLongitude || jsonData.longitude,
@@ -106,34 +111,34 @@ const server = net.createServer((socket) => {
                     };
 
                     // Process walk tracking
-                    await processWalkTracking(deviceImei, record);
+                    await processWalkTracking(socket.deviceImei, record);
                     
                     // Save device data
                     try {
-                        await saveDeviceData(deviceImei, [record]);
-                        console.log(`✅ Saved device data for ${deviceImei}`);
+                        await saveDeviceData(socket.deviceImei, [record]);
+                        console.log(`✅ Saved device data for ${socket.deviceImei}`);
                     } catch (error) {
-                        console.error(`❌ Failed to save device data for ${deviceImei}:`, error.message);
+                        console.error(`❌ Failed to save device data for ${socket.deviceImei}:`, error.message);
                     }
 
                     // Clear the buffer
-                    dataBuffer = Buffer.alloc(0);
+                    socket.dataBuffer = Buffer.alloc(0);
                 } catch (e) {
                     // Not JSON data, try Teltonika parsing
-                    if (dataBuffer.length >= 8) {
-                        const preamble = dataBuffer.readUInt32BE(0);
+                    if (socket.dataBuffer.length >= 8) {
+                        const preamble = socket.dataBuffer.readUInt32BE(0);
                         if (preamble !== 0) {
-                            dataBuffer = dataBuffer.slice(1);
-                            if (dataBuffer.length > 0) await processBuffer();
+                            socket.dataBuffer = socket.dataBuffer.slice(1);
+                            if (socket.dataBuffer.length > 0) await processBuffer();
                             return;
                         }
 
-                        const dataLength = dataBuffer.readUInt32BE(4);
+                        const dataLength = socket.dataBuffer.readUInt32BE(4);
                         const totalLength = 8 + dataLength + 4;
 
-                        if (dataBuffer.length >= totalLength) {
-                            const fullPacket = dataBuffer.slice(0, totalLength);
-                            const records = parseTeltonikaData(fullPacket, deviceImei);
+                        if (socket.dataBuffer.length >= totalLength) {
+                            const fullPacket = socket.dataBuffer.slice(0, totalLength);
+                            const records = parseTeltonikaData(fullPacket, socket.deviceImei);
 
                             if (records.length > 0) {
                                 // Filter records to only include those newer than server start
@@ -151,77 +156,77 @@ const server = net.createServer((socket) => {
                                         // Update the record with the calculated movement status
                                         record.movementStatus = movementStatus;
                                         
-                                        await processWalkTracking(deviceImei, record);
+                                        await processWalkTracking(socket.deviceImei, record);
                                     }
                                     
                                     try {
-                                        await saveDeviceData(deviceImei, newRecords);
-                                        console.log(`✅ Saved latest record for ${deviceImei}`);
+                                        await saveDeviceData(socket.deviceImei, newRecords);
+                                        console.log(`✅ Saved latest record for ${socket.deviceImei}`);
                                     } catch (error) {
-                                        console.error(`❌ Failed to save records for ${deviceImei}:`, error.message);
+                                        console.error(`❌ Failed to save records for ${socket.deviceImei}:`, error.message);
                                     }
                                 }
 
                                 const ackBuffer = Buffer.alloc(4);
                                 ackBuffer.writeUInt32BE(records.length, 0);
-                                safeSocketWrite(socket, ackBuffer, deviceImei);
+                                safeSocketWrite(socket, ackBuffer, socket.deviceImei);
                             }
 
-                            dataBuffer = dataBuffer.slice(totalLength);
-                            if (dataBuffer.length > 0) await processBuffer();
+                            socket.dataBuffer = socket.dataBuffer.slice(totalLength);
+                            if (socket.dataBuffer.length > 0) await processBuffer();
                         }
                     }
                 }
             }
         } catch (error) {
             console.error(`❌ Error in processBuffer: ${error.message}`);
-            dataBuffer = Buffer.alloc(0);
+            socket.dataBuffer = Buffer.alloc(0);
         }
     };
 
     // Timeout if the device doesn't send data within 1 minute
-    timeoutHandler = setTimeout(() => {
-        console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
+    socket.timeoutHandler = setTimeout(() => {
+        console.log(`⏱️ No data received from ${socket.deviceImei || 'unknown device'}`);
         socket.end();
     }, 60000);
 
     socket.setTimeout(SOCKET_TIMEOUT);
 
     socket.on('timeout', () => {
-        console.log(`⏱️ Connection timed out: ${deviceImei || 'unknown device'}`);
+        console.log(`⏱️ Connection timed out: ${socket.deviceImei || 'unknown device'}`);
         socket.end();
     });
 
     socket.on('data', async (data) => {
         try {
-            lastActivity = Date.now();
-            clearTimeout(timeoutHandler);
+            socket.lastActivity = Date.now();
+            clearTimeout(socket.timeoutHandler);
 
             if (DEBUG_LOG) {
-                console.log(`📩 Received ${data.length} bytes from ${deviceImei || 'new connection'} at ${new Date().toISOString()}`);
+                console.log(`📩 Received ${data.length} bytes from ${socket.deviceImei || 'new connection'} at ${new Date().toISOString()}`);
             }
 
             // Ensure dataBuffer is always properly initialized
-            if (typeof dataBuffer === 'undefined') {
-                dataBuffer = Buffer.alloc(0);
+            if (!socket.dataBuffer) {
+                socket.dataBuffer = Buffer.alloc(0);
             }
             
-            dataBuffer = Buffer.concat([dataBuffer, data]);
+            socket.dataBuffer = Buffer.concat([socket.dataBuffer, data]);
             await processBuffer();
 
             // Reset timeout
-            timeoutHandler = setTimeout(() => {
-                console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
+            socket.timeoutHandler = setTimeout(() => {
+                console.log(`⏱️ No data received from ${socket.deviceImei || 'unknown device'}`);
                 socket.end();
             }, 60000);
         } catch (error) {
             console.error(`❌ Error processing data: ${error.message}`);
-            dataBuffer = Buffer.alloc(0);
+            socket.dataBuffer = Buffer.alloc(0);
         }
     });
 
     socket.on('error', (err) => {
-        console.error(`❌ Connection error (${deviceImei || 'unknown'}): ${err.message}`);
+        console.error(`❌ Connection error (${socket.deviceImei || 'unknown'}): ${err.message}`);
         
         // Close socket if still open
         if (!socket.destroyed) {
@@ -233,50 +238,50 @@ const server = net.createServer((socket) => {
         }
         
         // Clean up the connection
-        if (deviceImei) {
+        if (socket.deviceImei) {
             // Remove from active devices
-            if (activeDevices.has(deviceImei)) {
-                activeDevices.delete(deviceImei);
+            if (activeDevices.has(socket.deviceImei)) {
+                activeDevices.delete(socket.deviceImei);
             }
             
             // Track reconnection attempts
-            if (!reconnectAttempts[deviceImei]) {
-                reconnectAttempts[deviceImei] = 0;
+            if (!reconnectAttempts[socket.deviceImei]) {
+                reconnectAttempts[socket.deviceImei] = 0;
             }
             
             // Only try to reconnect if under max attempts
-            if (reconnectAttempts[deviceImei] < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts[deviceImei]++;
-                console.log(`⏱️ Scheduling reconnection attempt ${reconnectAttempts[deviceImei]} for device ${deviceImei}`);
+            if (reconnectAttempts[socket.deviceImei] < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts[socket.deviceImei]++;
+                console.log(`⏱️ Scheduling reconnection attempt ${reconnectAttempts[socket.deviceImei]} for device ${socket.deviceImei}`);
                 
                 // Clean up any existing timeout
-                if (connectionTimeouts[deviceImei]) {
-                    clearTimeout(connectionTimeouts[deviceImei]);
+                if (connectionTimeouts[socket.deviceImei]) {
+                    clearTimeout(connectionTimeouts[socket.deviceImei]);
                 }
                 
                 // Schedule reconnect attempt - device will actually reconnect on its own
-                connectionTimeouts[deviceImei] = setTimeout(() => {
-                    console.log(`🔄 Connection timeout cleared for device ${deviceImei}`);
-                    delete connectionTimeouts[deviceImei];
+                connectionTimeouts[socket.deviceImei] = setTimeout(() => {
+                    console.log(`🔄 Connection timeout cleared for device ${socket.deviceImei}`);
+                    delete connectionTimeouts[socket.deviceImei];
                 }, 60000); // 1 minute delay
             } else {
-                console.log(`⚠️ Max reconnection attempts reached for device ${deviceImei}`);
+                console.log(`⚠️ Max reconnection attempts reached for device ${socket.deviceImei}`);
             }
         }
     });
 
     socket.on('close', () => {
-        console.log(`🔌 Device disconnected: ${deviceImei || 'unknown'}`);
+        console.log(`🔌 Device disconnected: ${socket.deviceImei || 'unknown'}`);
         
-        if (deviceImei && activeDevices.has(deviceImei)) {
-            activeDevices.delete(deviceImei);
+        if (socket.deviceImei && activeDevices.has(socket.deviceImei)) {
+            activeDevices.delete(socket.deviceImei);
         }
         
-        clearTimeout(timeoutHandler);
+        clearTimeout(socket.timeoutHandler);
         
         // If this was a clean close, reset reconnect attempts
-        if (deviceImei) {
-            reconnectAttempts[deviceImei] = 0;
+        if (socket.deviceImei) {
+            reconnectAttempts[socket.deviceImei] = 0;
         }
     });
 });
