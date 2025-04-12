@@ -40,8 +40,13 @@ const server = net.createServer((socket) => {
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
         try {
-            // Add safety check to prevent errors when dataBuffer is undefined
-            if (!dataBuffer || dataBuffer.length < 2) return;
+            // Ensure dataBuffer is initialized
+            if (!dataBuffer) {
+                dataBuffer = Buffer.alloc(0);
+                return;
+            }
+            
+            if (dataBuffer.length < 2) return;
 
             // Check for IMEI packet
             if (isImeiPacket(dataBuffer)) {
@@ -176,7 +181,6 @@ const server = net.createServer((socket) => {
             }
         } catch (error) {
             console.error(`❌ Error in processBuffer: ${error.message}`);
-            // Reset dataBuffer safely
             dataBuffer = Buffer.alloc(0);
         }
     };
@@ -216,7 +220,6 @@ const server = net.createServer((socket) => {
             }, 60000);
         } catch (error) {
             console.error(`❌ Error processing data: ${error.message}`);
-            // Reset dataBuffer on error
             dataBuffer = Buffer.alloc(0);
         }
     });
