@@ -37,19 +37,6 @@ const server = net.createServer((socket) => {
     const reconnectAttempts = {};
     const MAX_RECONNECT_ATTEMPTS = 5;
 
-    // Timeout if the device doesn't send data within 1 minute
-    timeoutHandler = setTimeout(() => {
-        console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
-        socket.end();
-    }, 60000);
-
-    socket.setTimeout(SOCKET_TIMEOUT);
-
-    socket.on('timeout', () => {
-        console.log(`⏱️ Connection timed out: ${deviceImei || 'unknown device'}`);
-        socket.end();
-    });
-
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
         try {
@@ -193,6 +180,19 @@ const server = net.createServer((socket) => {
             dataBuffer = Buffer.alloc(0);
         }
     };
+
+    // Timeout if the device doesn't send data within 1 minute
+    timeoutHandler = setTimeout(() => {
+        console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
+        socket.end();
+    }, 60000);
+
+    socket.setTimeout(SOCKET_TIMEOUT);
+
+    socket.on('timeout', () => {
+        console.log(`⏱️ Connection timed out: ${deviceImei || 'unknown device'}`);
+        socket.end();
+    });
 
     socket.on('data', async (data) => {
         try {
