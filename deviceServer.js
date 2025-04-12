@@ -289,33 +289,37 @@ const server = net.createServer((socket) => {
 // Improved walk tracking process with better error handling
 async function processWalkTracking(deviceImei, record) {
     try {
-        if (!movementTracker[deviceImei]) {
-            movementTracker[deviceImei] = {
-                lastMovement: new Date(),
-                movementStartTime: null,
-                falseDuration: 0,
-                isSaving: false
-            };
-            console.log(`🆕 Initialized movement tracker for ${deviceImei}`);
-        }
-        
-        const deviceTracker = movementTracker[deviceImei];
         const timestamp = new Date(record.timestamp);
-        const lat = record.positionLatitude || record.latitude;
-        const lon = record.positionLongitude || record.longitude;
-        
-        // Verify we have valid coordinates
-        if (!lat || !lon || lat === 0 || lon === 0) {
-            console.log(`❌ Invalid coordinates for device ${deviceImei}: [${lat}, ${lon}]`);
+        const lat = record.positionLatitude;
+        const lon = record.positionLongitude;
+
+        if (!lat || !lon) {
+            console.error(`❌ Invalid coordinates for device ${deviceImei}`);
             return;
         }
-        
-        console.log(`📍 Using coordinates: ${lat}, ${lon}`);
-        
-        // Check movement status based on speed
+
+        // Get device tracker from our local map
+        let deviceTracker = movementTracker[deviceImei];
+        if (!deviceTracker) {
+            deviceTracker = {
+                isSaving: false,
+                lastPoint: null,
+                lastUpdate: Date.now(),
+                movementStartTime: null,
+                falseDuration: 0
+            };
+            movementTracker[deviceImei] = deviceTracker;
+        }
+
+        // Update last point and timestamp
+        deviceTracker.lastPoint = { lat, lon, timestamp };
+        deviceTracker.lastUpdate = Date.now();
+
+        // Check if device is moving - use our own logic here
         const speed = record.positionSpeed || 0;
-        const isMoving = speed > 0.5; // Consider moving if speed > 0.5 km/h
-        console.log(`🔍 Movement check - Speed: ${speed} km/h, Status: ${isMoving}`);
+        const isMoving = speed > 3; // Using 3 km/h as threshold
+        
+        console.log(`🔍 Device ${deviceImei}: Speed ${speed} km/h, Moving: ${isMoving}`);
         
         if (isMoving) {
             // Reset false duration counter
@@ -324,78 +328,49 @@ async function processWalkTracking(deviceImei, record) {
             // Set movement start time if not already set
             if (!deviceTracker.movementStartTime) {
                 deviceTracker.movementStartTime = timestamp;
-                console.log(`🚶‍♂️ Device ${deviceImei}: Movement detected, starting timer at ${timestamp.toLocaleTimeString()}`);
+                console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
             }
             
-            // Store this point in pending points
-            if (!pendingPoints[deviceImei]) {
-                pendingPoints[deviceImei] = [];
-            }
-            
-            pendingPoints[deviceImei].push({
-                latitude: lat,
-                longitude: lon,
-                timestamp: timestamp
-            });
-            
-            // Check if we should start saving
-            const MOVEMENT_THRESHOLD = 1 * 60 * 1000; // 1 minute
-            const movementDuration = timestamp - deviceTracker.movementStartTime;
-            
-            console.log(`⏱️ Device ${deviceImei}: Movement duration: ${Math.round(movementDuration/1000)} seconds`);
-            
-            // Start saving if threshold reached
-            if (!deviceTracker.isSaving && movementDuration >= MOVEMENT_THRESHOLD) {
-                deviceTracker.isSaving = true;
-                console.log(`📝 Device ${deviceImei}: Started tracking after ${Math.round(movementDuration/1000)} seconds`);
-                
-                // Save all pending points
-                if (pendingPoints[deviceImei] && pendingPoints[deviceImei].length > 0) {
-                    try {
-                        const walkPath = await saveWalkPath(
-                            deviceImei,
-                            pendingPoints[deviceImei],
-                            true,
-                            pendingPoints[deviceImei][0].timestamp,
-                            null
-                        );
-                        
-                        if (walkPath) {
-                            console.log(`✅ Created walk path with ${pendingPoints[deviceImei].length} points`);
-                            // Clear pending points after successful save
-                            pendingPoints[deviceImei] = [];
-                        } else {
-                            console.error(`❌ Failed to create walk path with initial points`);
-                        }
-                    } catch (error) {
-                        console.error(`❌ Error creating walk path: ${error.message}`);
-                    }
-                }
-            } else if (deviceTracker.isSaving) {
-                // Add point to existing walk path
-                try {
+            // Check if we should save or create a walk path
+            if (!deviceTracker.isSaving) {
+                // Start saving after the movement has continued for some time
+                const movementDuration = timestamp - deviceTracker.movementStartTime;
+                if (movementDuration >= 30000) { // 30 seconds threshold
+                    console.log(`🛣️ Device ${deviceImei}: Starting walk path after ${Math.round(movementDuration/1000)}s of movement`);
+                    deviceTracker.isSaving = true;
+                    
+                    // Create a new walk path
                     const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
                     if (result) {
-                        console.log(`✅ Updated walk path for device ${deviceImei}`);
+                        console.log(`✅ Device ${deviceImei}: Created new walk path`);
                     } else {
-                        console.error(`❌ Failed to update walk path - null result`);
+                        console.error(`❌ Device ${deviceImei}: Failed to create walk path`);
                     }
-                } catch (error) {
-                    console.error(`❌ Error adding point to walk path: ${error.message}`);
+                }
+            } else {
+                // Update existing walk path
+                const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
+                if (result) {
+                    console.log(`✅ Device ${deviceImei}: Updated walk path`);
+                } else {
+                    console.error(`❌ Device ${deviceImei}: Failed to update walk path`);
                 }
             }
         } else {
             // Not moving - update falseDuration
-            deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
+            if (deviceTracker.lastMovement) {
+                deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
+            }
             
             // Stop tracking if inactive too long
-            const IDLE_THRESHOLD = 2 * 60 * 1000; // 2 minutes
-            if (deviceTracker.falseDuration >= IDLE_THRESHOLD && deviceTracker.isSaving) {
+            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute
                 console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
                 deviceTracker.isSaving = false;
                 deviceTracker.movementStartTime = null;
                 deviceTracker.falseDuration = 0;
-                pendingPoints[deviceImei] = [];
+                
+                // Close any active walk paths for this device
+                await closeActiveWalkPaths(deviceImei);
             }
         }
         
@@ -442,138 +417,76 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
 }
 
 // Helper function to update WalkPath when movement is detected
-async function updateWalkPath(deviceId, points, isActive, endTime) {
+async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
     try {
-        console.log(`Attempting to update walk path for device ${deviceId}`);
-        
-        // Handle single point vs array of points
-        const pointsArray = Array.isArray(points) ? points : [{
-            latitude: points,
-            longitude: isActive, // In single point mode, isActive is actually longitude
-            timestamp: endTime || new Date() // In single point mode, endTime is the timestamp
-        }];
-
         const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
         if (!deviceInfo) {
             console.error(`Cannot update walk path: Device ${deviceId} not found`);
             return null;
         }
 
-        // Ensure points is an array and contains valid lat/long
-        const validPoints = pointsArray.filter(point => 
-            point && typeof point === 'object' && 
-            point.latitude !== undefined && point.latitude !== null && point.latitude !== 0 &&
-            point.longitude !== undefined && point.longitude !== null && point.longitude !== 0
-        );
-
-        if (validPoints.length === 0) {
-            console.log(`❌ No valid points to update walk path for device ${deviceId}`);
-            return null;
-        }
-
-        // Find the active walk path for this device
-        let activeWalkPath = await WalkPath.findOne({ 
+        // First try to find an active walk path
+        let walkPath = await WalkPath.findOne({ 
             device: deviceInfo._id, 
             isActive: true 
         });
 
-        // If no active walk path, create a new one with explicit error handling
-        if (!activeWalkPath) {
-            console.log(`No active walk path found for device ${deviceId}, creating new one`);
-            
-            try {
-                // Create new walk path
-                const newWalkPath = new WalkPath({
-                    device: deviceInfo._id,
-                    isActive: true,
-                    startTime: validPoints[0].timestamp,
-                    coordinates: validPoints,
-                    distance: 0,
-                    duration: 0
-                });
-                
-                activeWalkPath = await newWalkPath.save();
-                console.log(`✅ Created new walk path for device ${deviceId} with ID: ${activeWalkPath._id}`);
-                return activeWalkPath;
-            } catch (createError) {
-                console.error(`❌ Failed to create new walk path: ${createError.message}`);
-                // Try one more time with minimal data
-                try {
-                    const simpleWalkPath = new WalkPath({
-                        device: deviceInfo._id,
-                        isActive: true,
-                        startTime: new Date(),
-                        coordinates: [{
-                            latitude: validPoints[0].latitude,
-                            longitude: validPoints[0].longitude,
-                            timestamp: validPoints[0].timestamp || new Date()
-                        }]
-                    });
-                    activeWalkPath = await simpleWalkPath.save();
-                    console.log(`✅ Created simplified walk path as fallback for device ${deviceId}`);
-                    return activeWalkPath;
-                } catch (retryError) {
-                    console.error(`❌ Final attempt to create walk path failed: ${retryError.message}`);
-                    return null;
-                }
+        if (!walkPath) {
+            console.log(`Creating new walk path for device ${deviceId}`);
+            // Create new walk path
+            walkPath = new WalkPath({
+                device: deviceInfo._id,
+                isActive: true,
+                startTime: timestamp,
+                coordinates: [{
+                    latitude,
+                    longitude,
+                    timestamp
+                }],
+                distance: 0,
+                duration: 0
+            });
+
+            await walkPath.save();
+            console.log(`✅ Created new walk path for device ${deviceId}`);
+            return walkPath;
+        }
+
+        // Update existing walk path
+        walkPath.coordinates.push({
+            latitude,
+            longitude,
+            timestamp
+        });
+
+        // Calculate new distance
+        let totalDistance = 0;
+        if (walkPath.coordinates.length > 1) {
+            for (let i = 1; i < walkPath.coordinates.length; i++) {
+                const prev = walkPath.coordinates[i-1];
+                const curr = walkPath.coordinates[i];
+                totalDistance += calculateDistance(
+                    prev.latitude,
+                    prev.longitude,
+                    curr.latitude,
+                    curr.longitude
+                );
             }
         }
 
-        // Update the existing walk path with new points
-        try {
-            // Add the new points
-            activeWalkPath.coordinates.push(...validPoints);
-            
-            // Update the isActive flag if provided
-            if (typeof isActive === 'boolean') {
-                activeWalkPath.isActive = isActive;
-            }
-            
-            // Update endTime if provided
-            if (endTime instanceof Date) {
-                activeWalkPath.endTime = endTime;
-            }
+        // Update duration
+        const duration = Math.floor((timestamp - walkPath.startTime) / 1000);
 
-            // Calculate new distance
-            let totalDistance = activeWalkPath.distance || 0;
-            const coordsLength = activeWalkPath.coordinates.length;
-            
-            if (coordsLength > 1) {
-                for (let i = coordsLength - validPoints.length; i < coordsLength; i++) {
-                    if (i > 0) {
-                        const prevPoint = activeWalkPath.coordinates[i-1];
-                        const currPoint = activeWalkPath.coordinates[i];
-                        
-                        const distance = calculateDistance(
-                            prevPoint.latitude, 
-                            prevPoint.longitude, 
-                            currPoint.latitude, 
-                            currPoint.longitude
-                        );
-                        totalDistance += distance;
-                    }
-                }
-            }
+        // Update the walk path
+        walkPath.distance = Math.round(totalDistance);
+        walkPath.duration = duration;
+        walkPath.isActive = true;
 
-            // Update duration
-            const startTime = activeWalkPath.startTime;
-            const lastPointTime = validPoints[validPoints.length - 1].timestamp;
-            const durationInSeconds = Math.floor((lastPointTime - startTime) / 1000);
-
-            // Update walk path properties
-            activeWalkPath.distance = Math.round(totalDistance);
-            activeWalkPath.duration = durationInSeconds;
-
-            // Save the updated walk path
-            const updatedWalkPath = await activeWalkPath.save();
-            console.log(`✅ Updated walk path for device ${deviceId} with ${validPoints.length} new points`);
-            return updatedWalkPath;
-        } catch (updateError) {
-            console.error(`❌ Error updating existing walk path: ${updateError.message}`);
-            return null;
-        }
+        await walkPath.save();
+        console.log(`✅ Updated walk path for device ${deviceId} with new point`);
+        return walkPath;
     } catch (error) {
-        console.error(`❌ Error in updateWalkPath: ${error.message}`);
+        console.error(`❌ Error updating walk path: ${error.message}`);
         return null;
     }
 }
@@ -662,6 +575,33 @@ async function startServer() {
     }
 }
 
+// Add the closeActiveWalkPaths function
+async function closeActiveWalkPaths(deviceId) {
+    try {
+        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+        if (!deviceInfo) return;
+        
+        const walkPaths = await WalkPath.find({
+            device: deviceInfo._id,
+            isActive: true
+        });
+        
+        for (const walkPath of walkPaths) {
+            walkPath.isActive = false;
+            walkPath.endTime = new Date();
+            await walkPath.save();
+            console.log(`✅ Closed walk path ${walkPath._id} for device ${deviceId}`);
+        }
+    } catch (error) {
+        console.error(`❌ Error closing walk paths: ${error.message}`);
+    }
+}
+
+// Add the deg2rad function
+function deg2rad(deg) {
+    return deg * (Math.PI / 180);
+}
+
 module.exports = {
     startServer,
     server,
@@ -671,5 +611,6 @@ module.exports = {
     handleSocketClose,
     handleDeviceData,
     processWalkTracking,
-    updateWalkPath
+    updateWalkPath,
+    closeActiveWalkPaths
 };
