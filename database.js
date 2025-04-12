@@ -43,12 +43,27 @@ const walkPathSchema = new mongoose.Schema({
     duration: { type: Number }
 }, { timestamps: true });
 
+// Add indexes to schemas
+deviceSchema.index({ deviceId: 1 });
+walkPathSchema.index({ device: 1, isActive: 1 });
+
 // Create models
 const Device = mongoose.model('Device', deviceSchema);
 const DeviceData = mongoose.model('DeviceData', deviceDataSchema);
 const WalkPath = mongoose.model('WalkPath', walkPathSchema);
 
-// Function to connect to MongoDB
+// Add retry configuration
+const RETRY_CONFIG = {
+    maxRetries: 3,
+    retryDelay: 1000, // 1 second
+    timeout: 5000 // 5 seconds
+};
+
+// Add connection state tracking
+let isConnected = false;
+let connectionRetries = 0;
+
+// Function to connect to MongoDB with retry logic
 async function connectToDatabase() {
     try {
         await mongoose.connect(MONGODB_URI, {
@@ -56,13 +71,58 @@ async function connectToDatabase() {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
             bufferCommands: false,
-            autoIndex: false
+            autoIndex: false,
+            retryWrites: true,
+            retryReads: true
         });
+        
+        isConnected = true;
+        connectionRetries = 0;
         console.log('✅ Connected to MongoDB');
+        
+        // Set up connection event handlers
+        mongoose.connection.on('error', (err) => {
+            console.error('❌ MongoDB connection error:', err);
+            isConnected = false;
+            handleConnectionError(err);
+        });
+
+        mongoose.connection.on('disconnected', () => {
+            console.log('⚠️ MongoDB disconnected');
+            isConnected = false;
+            handleConnectionError(new Error('MongoDB disconnected'));
+        });
+
+        mongoose.connection.on('reconnected', () => {
+            console.log('✅ MongoDB reconnected');
+            isConnected = true;
+            connectionRetries = 0;
+        });
     } catch (error) {
         console.error('❌ MongoDB connection error:', error);
+        handleConnectionError(error);
+    }
+}
+
+// Function to handle connection errors with retry logic
+async function handleConnectionError(error) {
+    if (connectionRetries < RETRY_CONFIG.maxRetries) {
+        connectionRetries++;
+        console.log(`⚠️ Attempting to reconnect to MongoDB (attempt ${connectionRetries}/${RETRY_CONFIG.maxRetries})...`);
+        setTimeout(connectToDatabase, RETRY_CONFIG.retryDelay);
+    } else {
+        console.error('❌ Max retry attempts reached. Please check your MongoDB connection.');
         process.exit(1);
     }
+}
+
+// Function to ensure database connection
+async function ensureConnection() {
+    if (!isConnected) {
+        console.log('⚠️ Database not connected, attempting to reconnect...');
+        await connectToDatabase();
+    }
+    return isConnected;
 }
 
 // Function to get device info
@@ -178,6 +238,7 @@ async function saveDeviceData(deviceId, records) {
         return null;
     }
 }
+
 function determineMovementStatus(record) {
     // Explicit movement status takes highest priority
     if (record.movementStatus !== undefined) return record.movementStatus;
@@ -265,106 +326,146 @@ async function saveWalkPath(deviceId, points, isActive, startTime, endTime) {
     }
 }
 
-// Function to update walk path
-async function updateWalkPath(deviceId, points, isActive, endTime) {
+// Function to process walk tracking
+async function processWalkTracking(deviceImei, record) {
     try {
-        console.log(`Attempting to update walk path for device ${deviceId} with ${Array.isArray(points) ? points.length : 1} points`);
-        
-        // Convert single point to array if needed
-        const pointsArray = Array.isArray(points) ? points : [{
-            latitude: points.latitude || points,
-            longitude: points.longitude || arguments[2],
-            timestamp: points.timestamp || arguments[3] || new Date()
-        }];
+        const timestamp = new Date(record.timestamp);
+        const lat = record.positionLatitude || record.latitude;
+        const lon = record.positionLongitude || record.longitude;
 
-        // Ensure points is an array and contains valid lat/long
-        const validPoints = pointsArray.filter(point => 
-            point && typeof point === 'object' && 
-            point.latitude !== undefined && point.latitude !== null && point.latitude !== 0 &&
-            point.longitude !== undefined && point.longitude !== null && point.longitude !== 0
-        );
-
-        if (validPoints.length === 0) {
-            console.log(`❌ No valid points to update walk path for device ${deviceId}`);
-            return null;
-        }
-        
-        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
-        if (!deviceInfo) {
-            console.error(`Cannot update walk path: Device ${deviceId} not found`);
-            return null;
+        if (!lat || !lon) {
+            console.error(`❌ Invalid coordinates for device ${deviceImei}`);
+            return;
         }
 
-        // Find the active walk path for this device
-        let activeWalkPath = await WalkPath.findOne({ 
-            device: deviceInfo._id, 
-            isActive: true 
-        });
+        // Get device tracker
+        let deviceTracker = activeDevices.get(deviceImei);
+        if (!deviceTracker) {
+            deviceTracker = {
+                isSaving: false,
+                lastPoint: null,
+                lastUpdate: Date.now()
+            };
+            activeDevices.set(deviceImei, deviceTracker);
+        }
 
-        if (!activeWalkPath) {
-            console.log(`No active walk path found for device ${deviceId}, creating new one`);
-            // Create new walk path since none exists
-            activeWalkPath = await saveWalkPath(
-                deviceId,
-                validPoints,
-                true,
-                validPoints[0].timestamp,
-                null
-            );
+        // Update last point and timestamp
+        deviceTracker.lastPoint = { lat, lon, timestamp };
+        deviceTracker.lastUpdate = Date.now();
+
+        // Check if device is moving
+        const movementStatus = determineMovementStatus(record);
+        if (movementStatus) {
+            if (!deviceTracker.isSaving) {
+                console.log(`🚶 Device ${deviceImei}: Started moving at ${timestamp.toLocaleTimeString()}`);
+                deviceTracker.isSaving = true;
+            }
+
+            // Save path data
+            console.log(`📍 Device ${deviceImei}: Adding point to walk path at ${timestamp.toLocaleTimeString()}`);
+            const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
+            if (result) {
+                console.log(`✅ Device ${deviceImei}: Updated walk path with new point`);
+            } else {
+                console.error(`❌ Device ${deviceImei}: Failed to update walk path - null result returned`);
+            }
+        } else if (deviceTracker.isSaving) {
+            console.log(`🛑 Device ${deviceImei}: Stopped moving at ${timestamp.toLocaleTimeString()}`);
+            deviceTracker.isSaving = false;
+        }
+    } catch (error) {
+        console.error(`❌ Error in processWalkTracking for ${deviceImei}: ${error.message}`);
+    }
+}
+
+// Function to update walk path with retry logic
+async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
+    let retries = 0;
+    
+    while (retries < RETRY_CONFIG.maxRetries) {
+        try {
+            await ensureConnection();
             
-            if (!activeWalkPath) {
-                console.error(`Failed to create new walk path for device ${deviceId}`);
+            const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+            if (!deviceInfo) {
+                console.error(`Cannot update walk path: Device ${deviceId} not found`);
                 return null;
             }
-            
-            console.log(`✅ Created new walk path for device ${deviceId}`);
-            return activeWalkPath;
-        }
 
-        // Update the existing walk path
-        activeWalkPath.coordinates.push(...validPoints);
-        activeWalkPath.isActive = isActive;
-        if (endTime) {
-            activeWalkPath.endTime = endTime;
-        }
+            // Use findOneAndUpdate with upsert to atomically find or create walkpath
+            const walkPath = await WalkPath.findOneAndUpdate(
+                { device: deviceInfo._id, isActive: true },
+                { 
+                    $push: { 
+                        coordinates: {
+                            latitude,
+                            longitude,
+                            timestamp
+                        }
+                    },
+                    $setOnInsert: { 
+                        startTime: timestamp,
+                        distance: 0,
+                        duration: 0,
+                        isActive: true
+                    }
+                },
+                { 
+                    new: true, 
+                    upsert: true,
+                    session: await mongoose.startSession()
+                }
+            );
 
-        // Calculate new total distance
-        let totalDistance = activeWalkPath.distance || 0;
-        if (validPoints.length > 1) {
-            for (let i = 1; i < validPoints.length; i++) {
-                const prevPoint = validPoints[i-1];
-                const currPoint = validPoints[i];
-                const distance = calculateDistance(
-                    prevPoint.latitude, 
-                    prevPoint.longitude, 
-                    currPoint.latitude, 
-                    currPoint.longitude
-                );
-                totalDistance += distance;
+            if (!walkPath) {
+                console.error(`Failed to find or create walk path for device ${deviceId}`);
+                return null;
             }
-        }
 
-        // Update duration
-        const startTime = activeWalkPath.startTime;
-        const lastPointTime = validPoints[validPoints.length - 1].timestamp;
-        const durationInSeconds = Math.floor((lastPointTime - startTime) / 1000);
+            // Calculate new distance and duration
+            let totalDistance = 0;
+            if (walkPath.coordinates.length > 1) {
+                for (let i = 1; i < walkPath.coordinates.length; i++) {
+                    const prev = walkPath.coordinates[i-1];
+                    const curr = walkPath.coordinates[i];
+                    totalDistance += calculateDistance(
+                        prev.latitude,
+                        prev.longitude,
+                        curr.latitude,
+                        curr.longitude
+                    );
+                }
+            }
 
-        // Update the walk path
-        activeWalkPath.distance = Math.round(totalDistance);
-        activeWalkPath.duration = durationInSeconds;
+            const duration = Math.floor((timestamp - walkPath.startTime) / 1000);
 
-        const updatedWalkPath = await activeWalkPath.save();
-        console.log(`✅ Updated walk path for device ${deviceId} with ${validPoints.length} new points`);
-        return updatedWalkPath;
-    } catch (error) {
-        if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
-            console.log(`⚠️ Connection error for device ${deviceId}, retrying...`);
-            // Add retry logic here if needed
+            // Update distance and duration
+            await WalkPath.updateOne(
+                { _id: walkPath._id },
+                { 
+                    $set: {
+                        distance: Math.round(totalDistance),
+                        duration: duration
+                    }
+                }
+            );
+
+            console.log(`✅ Updated walk path for device ${deviceId} with new point`);
+            return walkPath;
+        } catch (error) {
+            retries++;
+            if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+                console.log(`⚠️ Connection error for device ${deviceId} (attempt ${retries}/${RETRY_CONFIG.maxRetries})`);
+                if (retries < RETRY_CONFIG.maxRetries) {
+                    await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.retryDelay));
+                    continue;
+                }
+            }
+            console.error(`❌ Error updating walk path: ${error.message}`);
             return null;
         }
-        console.error(`❌ Error updating walk path: ${error.message}`);
-        return null;
     }
+    return null;
 }
 
 // Export all functions
@@ -374,6 +475,8 @@ module.exports = {
     saveDeviceData,
     saveWalkPath,
     updateWalkPath,
+    processWalkTracking,
+    ensureConnection,
     Device,
     DeviceData,
     WalkPath
