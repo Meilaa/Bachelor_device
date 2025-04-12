@@ -4,7 +4,8 @@ const {
     saveDeviceData, 
     saveWalkPath, 
     updateWalkPath: dbUpdateWalkPath,
-    WalkPath
+    WalkPath,
+    ensureConnection
 } = require('./database');
 const { parseTeltonikaData } = require('./parsers');
 const { calculateDistance } = require('./utils/geofenceUtils');
@@ -474,15 +475,7 @@ async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
                 return null;
             }
             
-            // Ensure we have a connection
-            const connected = await ensureConnection();
-            if (!connected) {
-                console.error(`❌ Cannot update walk path: Database connection failed for device ${deviceId}`);
-                retries++;
-                await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.retryDelay));
-                continue;
-            }
-            
+            // Get device info first
             const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
             if (!deviceInfo) {
                 console.error(`Cannot update walk path: Device ${deviceId} not found`);
