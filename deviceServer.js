@@ -73,7 +73,8 @@ const server = net.createServer((socket) => {
                         lastMovement: new Date(),
                         movementStartTime: null,
                         falseDuration: 0,
-                        isSaving: false
+                        isSaving: false,
+                        pendingPoints: [] // Store points before DB saving starts
                     };
                 }
 
@@ -297,14 +298,11 @@ async function processWalkTracking(deviceImei, record) {
         const lat = record.positionLatitude || record.latitude;
         const lon = record.positionLongitude || record.longitude;
 
-        // Improved coordinate validation - only reject undefined, NaN, or exact 0,0 point
-        if (lat === undefined || lon === undefined || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
+        // Validate coordinates
+        if (!lat || !lon || isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
             console.error(`❌ Invalid coordinates for device ${deviceImei}: lat=${lat}, lon=${lon}`);
             return;
         }
-
-        // More detailed logging to help with troubleshooting
-        console.log(`🔍 Movement check - Status: ${record.movementStatus}, Coordinates: ${lat}, ${lon}`);
 
         // Get device tracker from our local map
         let deviceTracker = movementTracker[deviceImei];
@@ -314,7 +312,8 @@ async function processWalkTracking(deviceImei, record) {
                 lastPoint: null,
                 lastUpdate: Date.now(),
                 movementStartTime: null,
-                falseDuration: 0
+                falseDuration: 0,
+                pendingPoints: [] // Store points before DB saving starts
             };
             movementTracker[deviceImei] = deviceTracker;
         }
@@ -323,11 +322,10 @@ async function processWalkTracking(deviceImei, record) {
         deviceTracker.lastPoint = { lat, lon, timestamp };
         deviceTracker.lastUpdate = Date.now();
 
-        // Check if device is moving - use our own logic here
-        const speed = record.positionSpeed || 0;
-        const isMoving = speed > 3; // Using 3 km/h as threshold
+        // Use movementStatus directly from the device
+        const isMoving = record.movementStatus === true;
         
-        console.log(`🔍 Device ${deviceImei}: Speed ${speed} km/h, Moving: ${isMoving}`);
+        console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}`);
         
         if (isMoving) {
             // Reset false duration counter
@@ -339,23 +337,38 @@ async function processWalkTracking(deviceImei, record) {
                 console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
             }
             
-            // Check if we should save or create a walk path
-            if (!deviceTracker.isSaving) {
-                // Start saving after the movement has continued for some time
-                const movementDuration = timestamp - deviceTracker.movementStartTime;
-                if (movementDuration >= 30000) { // 30 seconds threshold
-                    console.log(`🛣️ Device ${deviceImei}: Starting walk path after ${Math.round(movementDuration/1000)}s of movement`);
-                    deviceTracker.isSaving = true;
+            // Add point to pending points array
+            deviceTracker.pendingPoints.push({
+                latitude: lat,
+                longitude: lon,
+                timestamp: timestamp
+            });
+            
+            // Check if we should start saving to DB (after 5 minutes of movement)
+            const movementDuration = timestamp - deviceTracker.movementStartTime;
+            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 5 minutes = 300000 ms
+                console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000)}s of movement`);
+                deviceTracker.isSaving = true;
+                
+                // Save all pending points to DB
+                if (deviceTracker.pendingPoints.length > 0) {
+                    const result = await saveWalkPath(
+                        deviceImei,
+                        deviceTracker.pendingPoints,
+                        true,
+                        deviceTracker.pendingPoints[0].timestamp,
+                        null
+                    );
                     
-                    // Create a new walk path
-                    const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
                     if (result) {
-                        console.log(`✅ Device ${deviceImei}: Created new walk path`);
+                        console.log(`✅ Device ${deviceImei}: Created walk path with ${deviceTracker.pendingPoints.length} initial points`);
+                        // Clear pending points after successful save
+                        deviceTracker.pendingPoints = [];
                     } else {
-                        console.error(`❌ Device ${deviceImei}: Failed to create walk path`);
+                        console.error(`❌ Device ${deviceImei}: Failed to create initial walk path`);
                     }
                 }
-            } else {
+            } else if (deviceTracker.isSaving) {
                 // Update existing walk path
                 const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
                 if (result) {
@@ -370,12 +383,32 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
             }
             
-            // Stop tracking if inactive too long
-            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute
+            // Stop tracking if inactive for 5 minutes
+            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 5 minutes = 300000 ms
                 console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
+                
+                // Save any remaining pending points
+                if (deviceTracker.pendingPoints.length > 0) {
+                    const result = await saveWalkPath(
+                        deviceImei,
+                        deviceTracker.pendingPoints,
+                        false,
+                        deviceTracker.pendingPoints[0].timestamp,
+                        timestamp
+                    );
+                    
+                    if (result) {
+                        console.log(`✅ Device ${deviceImei}: Saved final walk path with ${deviceTracker.pendingPoints.length} points`);
+                    } else {
+                        console.error(`❌ Device ${deviceImei}: Failed to save final walk path`);
+                    }
+                }
+                
+                // Reset tracker state
                 deviceTracker.isSaving = false;
                 deviceTracker.movementStartTime = null;
                 deviceTracker.falseDuration = 0;
+                deviceTracker.pendingPoints = [];
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
