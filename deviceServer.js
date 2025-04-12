@@ -126,152 +126,152 @@ const server = net.createServer((socket) => {
             reconnectAttempts[deviceImei] = 0;
         }
     });
-});
 
-async function processBuffer() {
-    if (dataBuffer.length < 2) return;
+    async function processBuffer() {
+        if (dataBuffer.length < 2) return;
 
-    // Check for IMEI packet
-    if (isImeiPacket(dataBuffer)) {
-        deviceImei = parseImeiPacket(dataBuffer);
-        console.log(`📱 Device connected - IMEI: ${deviceImei} at ${new Date().toISOString()}`);
+        // Check for IMEI packet
+        if (isImeiPacket(dataBuffer)) {
+            deviceImei = parseImeiPacket(dataBuffer);
+            console.log(`📱 Device connected - IMEI: ${deviceImei} at ${new Date().toISOString()}`);
 
-        const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
-        if (!deviceInfo) {
-            console.warn(`⚠️ Unknown device: ${deviceImei}. Closing connection.`);
-            socket.end();
-            return;
-        }
-
-        activeDevices.set(deviceImei, {
-            socket,
-            imei: deviceImei,
-            ip: clientIP,
-            connectedAt: new Date(),
-            lastActivity: new Date()
-        });
-
-        // Initialize movement tracker for this device
-        if (!movementTracker[deviceImei]) {
-            movementTracker[deviceImei] = {
-                lastMovement: new Date(),
-                movementStartTime: null,
-                falseDuration: 0,
-                isSaving: false
-            };
-        }
-
-        // Initialize pending points array
-        if (!pendingPoints[deviceImei]) {
-            pendingPoints[deviceImei] = [];
-            console.log(`🆕 Initialized pending points array for ${deviceImei}`);
-        }
-
-        safeSocketWrite(socket, Buffer.from([0x01]), deviceImei);
-        const imeiLength = dataBuffer.readUInt16BE(0);
-        dataBuffer = dataBuffer.slice(2 + imeiLength);
-
-        if (dataBuffer.length > 0) processBuffer();
-    } else {
-        // Try to parse as JSON first
-        try {
-            const jsonData = JSON.parse(dataBuffer.toString());
-            console.log(`📦 Received JSON data from ${deviceImei}:`, jsonData);
-            
-            // Process the JSON data
-            const record = {
-                deviceImei: deviceImei,
-                deviceId: deviceImei,
-                timestamp: jsonData.timestamp,
-                positionLatitude: jsonData.positionLatitude || jsonData.latitude,
-                positionLongitude: jsonData.positionLongitude || jsonData.longitude,
-                movementStatus: jsonData.movementStatus,
-                positionSpeed: jsonData.positionSpeed,
-                positionValid: jsonData.positionValid,
-                positionAltitude: jsonData.positionAltitude,
-                positionDirection: jsonData.positionDirection,
-                batteryLevel: jsonData.batteryLevel,
-                gnssStatus: jsonData.gnssStatus
-            };
-
-            // Process walk tracking
-            await processWalkTracking(deviceImei, record);
-            
-            // Save device data
-            try {
-                await saveDeviceData(deviceImei, [record]);
-                console.log(`✅ Saved device data for ${deviceImei}`);
-            } catch (error) {
-                console.error(`❌ Failed to save device data for ${deviceImei}:`, error.message);
+            const deviceInfo = await getDeviceInfoByDeviceId(deviceImei);
+            if (!deviceInfo) {
+                console.warn(`⚠️ Unknown device: ${deviceImei}. Closing connection.`);
+                socket.end();
+                return;
             }
 
-            // Clear the buffer
-            dataBuffer = Buffer.alloc(0);
-        } catch (e) {
-            // Not JSON data, try Teltonika parsing
-            if (dataBuffer.length >= 8) {
-                const preamble = dataBuffer.readUInt32BE(0);
-                if (preamble !== 0) {
-                    dataBuffer = dataBuffer.slice(1);
-                    if (dataBuffer.length > 0) processBuffer();
-                    return;
+            activeDevices.set(deviceImei, {
+                socket,
+                imei: deviceImei,
+                ip: clientIP,
+                connectedAt: new Date(),
+                lastActivity: new Date()
+            });
+
+            // Initialize movement tracker for this device
+            if (!movementTracker[deviceImei]) {
+                movementTracker[deviceImei] = {
+                    lastMovement: new Date(),
+                    movementStartTime: null,
+                    falseDuration: 0,
+                    isSaving: false
+                };
+            }
+
+            // Initialize pending points array
+            if (!pendingPoints[deviceImei]) {
+                pendingPoints[deviceImei] = [];
+                console.log(`🆕 Initialized pending points array for ${deviceImei}`);
+            }
+
+            safeSocketWrite(socket, Buffer.from([0x01]), deviceImei);
+            const imeiLength = dataBuffer.readUInt16BE(0);
+            dataBuffer = dataBuffer.slice(2 + imeiLength);
+
+            if (dataBuffer.length > 0) processBuffer();
+        } else {
+            // Try to parse as JSON first
+            try {
+                const jsonData = JSON.parse(dataBuffer.toString());
+                console.log(`📦 Received JSON data from ${deviceImei}:`, jsonData);
+                
+                // Process the JSON data
+                const record = {
+                    deviceImei: deviceImei,
+                    deviceId: deviceImei,
+                    timestamp: jsonData.timestamp,
+                    positionLatitude: jsonData.positionLatitude || jsonData.latitude,
+                    positionLongitude: jsonData.positionLongitude || jsonData.longitude,
+                    movementStatus: jsonData.movementStatus,
+                    positionSpeed: jsonData.positionSpeed,
+                    positionValid: jsonData.positionValid,
+                    positionAltitude: jsonData.positionAltitude,
+                    positionDirection: jsonData.positionDirection,
+                    batteryLevel: jsonData.batteryLevel,
+                    gnssStatus: jsonData.gnssStatus
+                };
+
+                // Process walk tracking
+                await processWalkTracking(deviceImei, record);
+                
+                // Save device data
+                try {
+                    await saveDeviceData(deviceImei, [record]);
+                    console.log(`✅ Saved device data for ${deviceImei}`);
+                } catch (error) {
+                    console.error(`❌ Failed to save device data for ${deviceImei}:`, error.message);
                 }
 
-                const dataLength = dataBuffer.readUInt32BE(4);
-                const totalLength = 8 + dataLength + 4;
-
-                if (dataBuffer.length >= totalLength) {
-                    const fullPacket = dataBuffer.slice(0, totalLength);
-                    const records = parseTeltonikaData(fullPacket, deviceImei);
-
-                    if (records.length > 0) {
-                        // Filter records to only include those newer than server start
-                        const newRecords = records.filter(record => {
-                            const recordTime = new Date(record.timestamp).getTime();
-                            return recordTime > SERVER_START_TIME;
-                        });
-
-                        if (newRecords.length > 0) {
-                            
-                            // Process each record for walk tracking
-                            for (const record of newRecords) {
-                                // Ensure we have all necessary fields for walk tracking
-                                const walkRecord = {
-                                    ...record,
-                                    positionLatitude: record.positionLatitude || record.latitude,
-                                    positionLongitude: record.positionLongitude || record.longitude,
-                                    movementStatus: record.movementStatus !== undefined ? record.movementStatus : 
-                                                  (record.positionSpeed && record.positionSpeed > 1), // Use speed as fallback
-                                    positionSpeed: record.positionSpeed,
-                                    positionValid: record.positionValid,
-                                    positionAltitude: record.positionAltitude,
-                                    positionDirection: record.positionDirection,
-                                    batteryLevel: record.batteryLevel,
-                                    gnssStatus: record.gnssStatus
-                                };
-                                await processWalkTracking(deviceImei, walkRecord);
-                            }
-                            
-                            try {
-                                await saveDeviceData(deviceImei, newRecords);
-                                console.log(`✅ Saved latest record for ${deviceImei}`);
-                            } catch (error) {
-                                console.error(`❌ Failed to save records for ${deviceImei}:`, error.message);
-                            }
-                        }
-
-                        const ackBuffer = Buffer.alloc(4);
-                        ackBuffer.writeUInt32BE(records.length, 0);
-                        safeSocketWrite(socket, ackBuffer, deviceImei);
+                // Clear the buffer
+                dataBuffer = Buffer.alloc(0);
+            } catch (e) {
+                // Not JSON data, try Teltonika parsing
+                if (dataBuffer.length >= 8) {
+                    const preamble = dataBuffer.readUInt32BE(0);
+                    if (preamble !== 0) {
+                        dataBuffer = dataBuffer.slice(1);
+                        if (dataBuffer.length > 0) processBuffer();
+                        return;
                     }
 
-                    dataBuffer = dataBuffer.slice(totalLength);
-                    if (dataBuffer.length > 0) processBuffer();
+                    const dataLength = dataBuffer.readUInt32BE(4);
+                    const totalLength = 8 + dataLength + 4;
+
+                    if (dataBuffer.length >= totalLength) {
+                        const fullPacket = dataBuffer.slice(0, totalLength);
+                        const records = parseTeltonikaData(fullPacket, deviceImei);
+
+                        if (records.length > 0) {
+                            // Filter records to only include those newer than server start
+                            const newRecords = records.filter(record => {
+                                const recordTime = new Date(record.timestamp).getTime();
+                                return recordTime > SERVER_START_TIME;
+                            });
+
+                            if (newRecords.length > 0) {
+                                
+                                // Process each record for walk tracking
+                                for (const record of newRecords) {
+                                    // Ensure we have all necessary fields for walk tracking
+                                    const walkRecord = {
+                                        ...record,
+                                        positionLatitude: record.positionLatitude || record.latitude,
+                                        positionLongitude: record.positionLongitude || record.longitude,
+                                        movementStatus: record.movementStatus !== undefined ? record.movementStatus : 
+                                                      (record.positionSpeed && record.positionSpeed > 1), // Use speed as fallback
+                                        positionSpeed: record.positionSpeed,
+                                        positionValid: record.positionValid,
+                                        positionAltitude: record.positionAltitude,
+                                        positionDirection: record.positionDirection,
+                                        batteryLevel: record.batteryLevel,
+                                        gnssStatus: record.gnssStatus
+                                    };
+                                    await processWalkTracking(deviceImei, walkRecord);
+                                }
+                                
+                                try {
+                                    await saveDeviceData(deviceImei, newRecords);
+                                    console.log(`✅ Saved latest record for ${deviceImei}`);
+                                } catch (error) {
+                                    console.error(`❌ Failed to save records for ${deviceImei}:`, error.message);
+                                }
+                            }
+
+                            const ackBuffer = Buffer.alloc(4);
+                            ackBuffer.writeUInt32BE(records.length, 0);
+                            safeSocketWrite(socket, ackBuffer, deviceImei);
+                        }
+
+                        dataBuffer = dataBuffer.slice(totalLength);
+                        if (dataBuffer.length > 0) processBuffer();
+                    }
                 }
             }
         }
     }
-}
+});
 
 // Helper function to process walk tracking
 // Improved walk tracking process with better error handling
