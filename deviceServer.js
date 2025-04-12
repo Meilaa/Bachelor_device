@@ -53,7 +53,8 @@ const server = net.createServer((socket) => {
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
         try {
-            if (dataBuffer.length < 2) return;
+            // Add safety check to prevent errors when dataBuffer is undefined
+            if (!dataBuffer || dataBuffer.length < 2) return;
 
             // Check for IMEI packet
             if (isImeiPacket(dataBuffer)) {
@@ -188,7 +189,7 @@ const server = net.createServer((socket) => {
             }
         } catch (error) {
             console.error(`❌ Error in processBuffer: ${error.message}`);
-            // Clear the buffer on error to prevent infinite loops
+            // Reset dataBuffer safely
             dataBuffer = Buffer.alloc(0);
         }
     };
@@ -202,15 +203,21 @@ const server = net.createServer((socket) => {
                 console.log(`📩 Received ${data.length} bytes from ${deviceImei || 'new connection'} at ${new Date().toISOString()}`);
             }
 
+            // Make sure dataBuffer is initialized
+            if (!dataBuffer) dataBuffer = Buffer.alloc(0);
+            
             dataBuffer = Buffer.concat([dataBuffer, data]);
             await processBuffer();
 
+            // Reset timeout
             timeoutHandler = setTimeout(() => {
                 console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
                 socket.end();
             }, 60000);
         } catch (error) {
             console.error(`❌ Error processing data: ${error.message}`);
+            // Reset dataBuffer on error
+            dataBuffer = Buffer.alloc(0);
         }
     });
 
