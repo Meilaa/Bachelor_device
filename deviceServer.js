@@ -32,6 +32,11 @@ const server = net.createServer((socket) => {
     let lastActivity = Date.now();
     let timeoutHandler = null;
 
+    // Connection management improvements
+    const connectionTimeouts = {};
+    const reconnectAttempts = {};
+    const MAX_RECONNECT_ATTEMPTS = 5;
+
     // Timeout if the device doesn't send data within 1 minute
     timeoutHandler = setTimeout(() => {
         console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
@@ -45,95 +50,8 @@ const server = net.createServer((socket) => {
         socket.end();
     });
 
-    socket.on('data', async (data) => {
-        try {
-            lastActivity = Date.now();
-            clearTimeout(timeoutHandler);
-
-            if (DEBUG_LOG) {
-                console.log(`📩 Received ${data.length} bytes from ${deviceImei || 'new connection'} at ${new Date().toISOString()}`);
-            }
-
-            dataBuffer = Buffer.concat([dataBuffer, data]);
-            await processBuffer();
-
-            timeoutHandler = setTimeout(() => {
-                console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
-                socket.end();
-            }, 60000);
-        } catch (error) {
-            console.error(`❌ Error processing data: ${error.message}`);
-        }
-    });
-
-    // Add this near the top of your file or in a strategic location
-    // Connection management improvements
-    const connectionTimeouts = {};
-    const reconnectAttempts = {};
-    const MAX_RECONNECT_ATTEMPTS = 5;
-
-    // Add this to your socket handling in deviceServer.js
-    socket.on('error', (err) => {
-        console.error(`❌ Connection error (${deviceImei || 'unknown'}): ${err.message}`);
-        
-        // Close socket if still open
-        if (!socket.destroyed) {
-            try {
-                socket.end();
-            } catch (closeErr) {
-                console.error(`Error closing socket: ${closeErr.message}`);
-            }
-        }
-        
-        // Clean up the connection
-        if (deviceImei) {
-            // Remove from active devices
-            if (activeDevices.has(deviceImei)) {
-                activeDevices.delete(deviceImei);
-            }
-            
-            // Track reconnection attempts
-            if (!reconnectAttempts[deviceImei]) {
-                reconnectAttempts[deviceImei] = 0;
-            }
-            
-            // Only try to reconnect if under max attempts
-            if (reconnectAttempts[deviceImei] < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts[deviceImei]++;
-                console.log(`⏱️ Scheduling reconnection attempt ${reconnectAttempts[deviceImei]} for device ${deviceImei}`);
-                
-                // Clean up any existing timeout
-                if (connectionTimeouts[deviceImei]) {
-                    clearTimeout(connectionTimeouts[deviceImei]);
-                }
-                
-                // Schedule reconnect attempt - device will actually reconnect on its own
-                connectionTimeouts[deviceImei] = setTimeout(() => {
-                    console.log(`🔄 Connection timeout cleared for device ${deviceImei}`);
-                    delete connectionTimeouts[deviceImei];
-                }, 60000); // 1 minute delay
-            } else {
-                console.log(`⚠️ Max reconnection attempts reached for device ${deviceImei}`);
-            }
-        }
-    });
-
-    socket.on('close', () => {
-        console.log(`🔌 Device disconnected: ${deviceImei || 'unknown'}`);
-        
-        if (deviceImei && activeDevices.has(deviceImei)) {
-            activeDevices.delete(deviceImei);
-        }
-        
-        clearTimeout(timeoutHandler);
-        
-        // If this was a clean close, reset reconnect attempts
-        if (deviceImei) {
-            reconnectAttempts[deviceImei] = 0;
-        }
-    });
-
-    async function processBuffer() {
+    // Define processBuffer function within socket scope
+    const processBuffer = async () => {
         try {
             if (dataBuffer.length < 2) return;
 
@@ -273,7 +191,88 @@ const server = net.createServer((socket) => {
             // Clear the buffer on error to prevent infinite loops
             dataBuffer = Buffer.alloc(0);
         }
-    }
+    };
+
+    socket.on('data', async (data) => {
+        try {
+            lastActivity = Date.now();
+            clearTimeout(timeoutHandler);
+
+            if (DEBUG_LOG) {
+                console.log(`📩 Received ${data.length} bytes from ${deviceImei || 'new connection'} at ${new Date().toISOString()}`);
+            }
+
+            dataBuffer = Buffer.concat([dataBuffer, data]);
+            await processBuffer();
+
+            timeoutHandler = setTimeout(() => {
+                console.log(`⏱️ No data received from ${deviceImei || 'unknown device'}`);
+                socket.end();
+            }, 60000);
+        } catch (error) {
+            console.error(`❌ Error processing data: ${error.message}`);
+        }
+    });
+
+    socket.on('error', (err) => {
+        console.error(`❌ Connection error (${deviceImei || 'unknown'}): ${err.message}`);
+        
+        // Close socket if still open
+        if (!socket.destroyed) {
+            try {
+                socket.end();
+            } catch (closeErr) {
+                console.error(`Error closing socket: ${closeErr.message}`);
+            }
+        }
+        
+        // Clean up the connection
+        if (deviceImei) {
+            // Remove from active devices
+            if (activeDevices.has(deviceImei)) {
+                activeDevices.delete(deviceImei);
+            }
+            
+            // Track reconnection attempts
+            if (!reconnectAttempts[deviceImei]) {
+                reconnectAttempts[deviceImei] = 0;
+            }
+            
+            // Only try to reconnect if under max attempts
+            if (reconnectAttempts[deviceImei] < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts[deviceImei]++;
+                console.log(`⏱️ Scheduling reconnection attempt ${reconnectAttempts[deviceImei]} for device ${deviceImei}`);
+                
+                // Clean up any existing timeout
+                if (connectionTimeouts[deviceImei]) {
+                    clearTimeout(connectionTimeouts[deviceImei]);
+                }
+                
+                // Schedule reconnect attempt - device will actually reconnect on its own
+                connectionTimeouts[deviceImei] = setTimeout(() => {
+                    console.log(`🔄 Connection timeout cleared for device ${deviceImei}`);
+                    delete connectionTimeouts[deviceImei];
+                }, 60000); // 1 minute delay
+            } else {
+                console.log(`⚠️ Max reconnection attempts reached for device ${deviceImei}`);
+            }
+        }
+    });
+
+    socket.on('close', () => {
+        console.log(`🔌 Device disconnected: ${deviceImei || 'unknown'}`);
+        
+        if (deviceImei && activeDevices.has(deviceImei)) {
+            activeDevices.delete(deviceImei);
+        }
+        
+        clearTimeout(timeoutHandler);
+        
+        // If this was a clean close, reset reconnect attempts
+        if (deviceImei) {
+            reconnectAttempts[deviceImei] = 0;
+        }
+    });
 });
 
 // Helper function to process walk tracking
