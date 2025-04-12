@@ -44,7 +44,7 @@ const walkPathSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Add indexes to schemas
-deviceSchema.index({ deviceId: 1 });
+// deviceSchema.index({ deviceId: 1 }, { unique: true }); // Removing duplicate index
 walkPathSchema.index({ device: 1, isActive: 1 });
 
 // Create models
@@ -392,37 +392,41 @@ async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
                 return null;
             }
 
-            // Use findOneAndUpdate with upsert to atomically find or create walkpath
-            const walkPath = await WalkPath.findOneAndUpdate(
-                { device: deviceInfo._id, isActive: true },
-                { 
-                    $push: { 
-                        coordinates: {
-                            latitude,
-                            longitude,
-                            timestamp
-                        }
-                    },
-                    $setOnInsert: { 
-                        startTime: timestamp,
-                        distance: 0,
-                        duration: 0,
-                        isActive: true
-                    }
-                },
-                { 
-                    new: true, 
-                    upsert: true,
-                    session: await mongoose.startSession()
-                }
-            );
+            // First try to find an active walk path
+            let walkPath = await WalkPath.findOne({ 
+                device: deviceInfo._id, 
+                isActive: true 
+            });
 
             if (!walkPath) {
-                console.error(`Failed to find or create walk path for device ${deviceId}`);
-                return null;
+                console.log(`Creating new walk path for device ${deviceId}`);
+                // Create new walk path
+                walkPath = new WalkPath({
+                    device: deviceInfo._id,
+                    isActive: true,
+                    startTime: timestamp,
+                    coordinates: [{
+                        latitude,
+                        longitude,
+                        timestamp
+                    }],
+                    distance: 0,
+                    duration: 0
+                });
+
+                await walkPath.save();
+                console.log(`✅ Created new walk path for device ${deviceId}`);
+                return walkPath;
             }
 
-            // Calculate new distance and duration
+            // Update existing walk path
+            walkPath.coordinates.push({
+                latitude,
+                longitude,
+                timestamp
+            });
+
+            // Calculate new distance
             let totalDistance = 0;
             if (walkPath.coordinates.length > 1) {
                 for (let i = 1; i < walkPath.coordinates.length; i++) {
@@ -437,19 +441,15 @@ async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
                 }
             }
 
+            // Update duration
             const duration = Math.floor((timestamp - walkPath.startTime) / 1000);
 
-            // Update distance and duration
-            await WalkPath.updateOne(
-                { _id: walkPath._id },
-                { 
-                    $set: {
-                        distance: Math.round(totalDistance),
-                        duration: duration
-                    }
-                }
-            );
+            // Update the walk path
+            walkPath.distance = Math.round(totalDistance);
+            walkPath.duration = duration;
+            walkPath.isActive = true;
 
+            await walkPath.save();
             console.log(`✅ Updated walk path for device ${deviceId} with new point`);
             return walkPath;
         } catch (error) {
