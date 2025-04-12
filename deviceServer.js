@@ -294,11 +294,12 @@ const server = net.createServer((socket) => {
 async function processWalkTracking(deviceImei, record) {
     try {
         const timestamp = new Date(record.timestamp);
-        const lat = record.positionLatitude;
-        const lon = record.positionLongitude;
+        const lat = record.positionLatitude || record.latitude;
+        const lon = record.positionLongitude || record.longitude;
 
-        if (!lat || !lon) {
-            console.error(`❌ Invalid coordinates for device ${deviceImei}`);
+        // Validate coordinates
+        if (!lat || !lon || isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
+            console.error(`❌ Invalid coordinates for device ${deviceImei}: lat=${lat}, lon=${lon}`);
             return;
         }
 
