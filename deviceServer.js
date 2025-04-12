@@ -297,11 +297,14 @@ async function processWalkTracking(deviceImei, record) {
         const lat = record.positionLatitude || record.latitude;
         const lon = record.positionLongitude || record.longitude;
 
-        // Validate coordinates
-        if (!lat || !lon || isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
+        // Improved coordinate validation - only reject undefined, NaN, or exact 0,0 point
+        if (lat === undefined || lon === undefined || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
             console.error(`❌ Invalid coordinates for device ${deviceImei}: lat=${lat}, lon=${lon}`);
             return;
         }
+
+        // More detailed logging to help with troubleshooting
+        console.log(`🔍 Movement check - Status: ${record.movementStatus}, Coordinates: ${lat}, ${lon}`);
 
         // Get device tracker from our local map
         let deviceTracker = movementTracker[deviceImei];
@@ -389,10 +392,11 @@ async function processWalkTracking(deviceImei, record) {
 // Helper function to create a walk path with initial points
 async function createWalkPathWithInitialPoints(deviceImei, points) {
     try {
-        // Validate that we have at least one valid point
+        // Improved validation to avoid rejecting valid coordinates
         if (!points || points.length === 0 || 
-            !points[0].latitude || !points[0].longitude || 
-            points[0].latitude === 0 || points[0].longitude === 0) {
+            points[0].latitude === undefined || points[0].longitude === undefined || 
+            isNaN(points[0].latitude) || isNaN(points[0].longitude) || 
+            (points[0].latitude === 0 && points[0].longitude === 0)) {
             console.log(`❌ Skipping walk creation for device ${deviceImei}: No valid coordinates`);
             return;
         }
