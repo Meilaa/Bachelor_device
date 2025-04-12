@@ -82,7 +82,8 @@ const server = net.createServer((socket) => {
                         movementStartTime: null,
                         falseDuration: 0,
                         isSaving: false,
-                        pendingPoints: [] // Store points before DB saving starts
+                        pendingPoints: [], // Store points before DB saving starts
+                        activeWalkPathId: null // Track the active walk path ID
                     };
                 }
 
@@ -315,7 +316,8 @@ async function processWalkTracking(deviceImei, record) {
                 lastUpdate: Date.now(),
                 movementStartTime: null,
                 falseDuration: 0,
-                pendingPoints: [] // Store points before DB saving starts
+                pendingPoints: [], // Store points before DB saving starts
+                activeWalkPathId: null // Track the active walk path ID
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
@@ -350,10 +352,10 @@ async function processWalkTracking(deviceImei, record) {
             
             console.log(`📝 Device ${deviceImei}: Added point to pending points. Total pending points: ${deviceTracker.pendingPoints.length}`);
             
-            // Check if we should start saving to DB (after 30 seconds of movement)
+            // Check if we should start saving to DB (after 5 minutes of movement)
             const movementDuration = timestamp - deviceTracker.movementStartTime;
-            if (movementDuration >= 30000 && !deviceTracker.isSaving) { // 30 seconds = 30000 ms
-                console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000)}s of movement`);
+            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 5 minutes = 300000 ms
+                console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000/60)} minutes of movement`);
                 deviceTracker.isSaving = true;
                 
                 // Save all pending points to DB
@@ -368,6 +370,8 @@ async function processWalkTracking(deviceImei, record) {
                     
                     if (result) {
                         console.log(`✅ Device ${deviceImei}: Created walk path with ${deviceTracker.pendingPoints.length} initial points`);
+                        // Store the walk path ID
+                        deviceTracker.activeWalkPathId = result._id;
                         // Clear pending points after successful save
                         deviceTracker.pendingPoints = [];
                     } else {
@@ -389,9 +393,9 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
             }
             
-            // Stop tracking if inactive for 1 minute
-            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute = 60000 ms
-                console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
+            // Stop tracking if inactive for 5 minutes
+            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 5 minutes = 300000 ms
+                console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000/60)} minutes idle`);
                 
                 // Save any remaining pending points
                 if (deviceTracker.pendingPoints.length > 0) {
@@ -415,6 +419,7 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.movementStartTime = null;
                 deviceTracker.falseDuration = 0;
                 deviceTracker.pendingPoints = [];
+                deviceTracker.activeWalkPathId = null;
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
