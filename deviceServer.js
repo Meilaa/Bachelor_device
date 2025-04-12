@@ -322,10 +322,11 @@ async function processWalkTracking(deviceImei, record) {
         deviceTracker.lastPoint = { lat, lon, timestamp };
         deviceTracker.lastUpdate = Date.now();
 
-        // Use movementStatus directly from the device
-        const isMoving = record.movementStatus === true;
+        // Get movement status from the record
+        // Check both movementStatus and movement fields
+        const isMoving = record.movementStatus === true || record.movement === true;
         
-        console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}`);
+        console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
         
         if (isMoving) {
             // Reset false duration counter
