@@ -83,7 +83,8 @@ const server = net.createServer((socket) => {
                         falseDuration: 0,
                         isSaving: false,
                         pendingPoints: [], // Store points before DB saving starts
-                        activeWalkPathId: null // Track the active walk path ID
+                        activeWalkPathId: null, // Track the active walk path ID
+                        walkPathFinished: false // Track if the current walk path is finished
                     };
                 }
 
@@ -317,10 +318,17 @@ async function processWalkTracking(deviceImei, record) {
                 movementStartTime: null,
                 falseDuration: 0,
                 pendingPoints: [], // Store points before DB saving starts
-                activeWalkPathId: null // Track the active walk path ID
+                activeWalkPathId: null, // Track the active walk path ID
+                walkPathFinished: false // Track if the current walk path is finished
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
+        }
+
+        // If walk path is finished and device is not moving, don't process any more points
+        if (deviceTracker.walkPathFinished && !record.movementStatus) {
+            console.log(`⏹️ Device ${deviceImei}: Walk path finished, ignoring stationary points`);
+            return;
         }
 
         // Update last point and timestamp
@@ -334,8 +342,9 @@ async function processWalkTracking(deviceImei, record) {
         console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
         
         if (isMoving) {
-            // Reset false duration counter
+            // Reset false duration counter and walk path finished flag
             deviceTracker.falseDuration = 0;
+            deviceTracker.walkPathFinished = false;
             
             // Set movement start time if not already set
             if (!deviceTracker.movementStartTime) {
@@ -422,6 +431,7 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration = 0;
                 deviceTracker.pendingPoints = [];
                 deviceTracker.activeWalkPathId = null;
+                deviceTracker.walkPathFinished = true; // Mark the walk path as finished
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
