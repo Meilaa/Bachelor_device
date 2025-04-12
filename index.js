@@ -1,7 +1,7 @@
 require('dotenv').config(); // Load environment variables
 
 const express = require('express');
-const { startDeviceServer, activeDevices } = require('./deviceServer');
+const { startServer, activeDevices } = require('./deviceServer');
 const { connectToDatabase } = require('./database');
 const { MONITORING_PORT } = require('./config');
 
@@ -18,7 +18,7 @@ async function initializeServers() {
         console.log('✅ Database connection established');
 
         // Start device server
-        await startDeviceServer();
+        await startServer();
         console.log('✅ Device server started');
 
         // Handle server closing

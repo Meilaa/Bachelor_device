@@ -39,13 +39,8 @@ const server = net.createServer((socket) => {
 
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
-        // Ensure dataBuffer is always initialized
-        if (typeof dataBuffer === 'undefined') {
-            dataBuffer = Buffer.alloc(0);
-        }
-        
         try {
-            if (dataBuffer.length < 2) return;
+            if (!dataBuffer || dataBuffer.length < 2) return;
 
             // Check for IMEI packet
             if (isImeiPacket(dataBuffer)) {
@@ -664,11 +659,12 @@ async function startServer() {
 
 module.exports = {
     startServer,
-    startDeviceServer: startServer,
     server,
     activeDevices,
     safeSocketWrite,
     handleSocketError,
     handleSocketClose,
-    handleDeviceData
+    handleDeviceData,
+    processWalkTracking,
+    updateWalkPath
 };
