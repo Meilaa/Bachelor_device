@@ -43,6 +43,7 @@ const server = net.createServer((socket) => {
             // Ensure dataBuffer is always initialized
             if (!socket.dataBuffer) {
                 socket.dataBuffer = Buffer.alloc(0);
+                return;
             }
 
             if (socket.dataBuffer.length < 2) return;
@@ -211,7 +212,10 @@ const server = net.createServer((socket) => {
                 socket.dataBuffer = Buffer.alloc(0);
             }
             
-            socket.dataBuffer = Buffer.concat([socket.dataBuffer, data]);
+            // Create a new buffer with the existing data and new data
+            const newBuffer = Buffer.concat([socket.dataBuffer, data]);
+            socket.dataBuffer = newBuffer;
+            
             await processBuffer();
 
             // Reset timeout
