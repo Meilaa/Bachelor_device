@@ -82,7 +82,8 @@ const server = net.createServer((socket) => {
                         movementStartTime: null,
                         falseDuration: 0,
                         isSaving: false,
-                        pendingPoints: [] // Store points before DB saving starts
+                        pendingPoints: [], // Store points before DB saving starts
+                        activeWalkPathId: null // Track the active walk path ID
                     };
                 }
 
@@ -315,7 +316,8 @@ async function processWalkTracking(deviceImei, record) {
                 lastUpdate: Date.now(),
                 movementStartTime: null,
                 falseDuration: 0,
-                pendingPoints: [] // Store points before DB saving starts
+                pendingPoints: [], // Store points before DB saving starts
+                activeWalkPathId: null // Track the active walk path ID
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
@@ -368,6 +370,8 @@ async function processWalkTracking(deviceImei, record) {
                     
                     if (result) {
                         console.log(`✅ Device ${deviceImei}: Created walk path with ${deviceTracker.pendingPoints.length} initial points`);
+                        // Store the walk path ID
+                        deviceTracker.activeWalkPathId = result._id;
                         // Clear pending points after successful save
                         deviceTracker.pendingPoints = [];
                     } else {
@@ -415,6 +419,7 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.movementStartTime = null;
                 deviceTracker.falseDuration = 0;
                 deviceTracker.pendingPoints = [];
+                deviceTracker.activeWalkPathId = null;
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
