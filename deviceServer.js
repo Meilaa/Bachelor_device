@@ -355,9 +355,9 @@ async function processWalkTracking(deviceImei, record) {
             
             console.log(`📝 Device ${deviceImei}: Added point to pending points. Total pending points: ${deviceTracker.pendingPoints.length}`);
             
-            // Check if we should start saving to DB (after 30 seconds of movement)
+            // Check if we should start saving to DB (after 5 minutes of movement)
             const movementDuration = timestamp - deviceTracker.movementStartTime;
-            if (movementDuration >= 30000 && !deviceTracker.isSaving) { // 30 seconds threshold
+            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 5 minutes threshold
                 console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000)}s of movement`);
                 deviceTracker.isSaving = true;
                 
@@ -419,10 +419,10 @@ async function processWalkTracking(deviceImei, record) {
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
             } else if (deviceTracker.movementStartTime) {
-                // If we were tracking movement but haven't reached 30 seconds yet, reset
+                // If we were tracking movement but haven't reached 5 minutes yet, reset
                 const movementDuration = timestamp - deviceTracker.movementStartTime;
-                if (movementDuration < 30000) {
-                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 30 seconds. Resetting tracking.`);
+                if (movementDuration < 300000) {
+                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 5 minutes. Resetting tracking.`);
                     deviceTracker.movementStartTime = null;
                     deviceTracker.pendingPoints = [];
                 }
