@@ -386,6 +386,8 @@ async function processWalkTracking(deviceImei, record) {
                 } else {
                     console.error(`❌ Device ${deviceImei}: Failed to update walk path`);
                 }
+            } else {
+                console.log(`⏳ Device ${deviceImei}: Collecting points before DB saving starts. Movement duration: ${Math.round(movementDuration/1000/60)} minutes`);
             }
         } else {
             // Not moving - update falseDuration
@@ -423,6 +425,14 @@ async function processWalkTracking(deviceImei, record) {
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
+            } else if (deviceTracker.movementStartTime) {
+                // If we were tracking movement but haven't reached 5 minutes yet, reset
+                const movementDuration = timestamp - deviceTracker.movementStartTime;
+                if (movementDuration < 300000) {
+                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 5 minutes. Resetting tracking.`);
+                    deviceTracker.movementStartTime = null;
+                    deviceTracker.pendingPoints = [];
+                }
             }
         }
         
