@@ -170,7 +170,6 @@ async function getDeviceInfoByDeviceId(deviceId) {
     }
 }
 
-// Function to save device data
 async function saveDeviceData(deviceId, records) {
     try {
         if (!records || records.length === 0) {
@@ -213,9 +212,11 @@ async function saveDeviceData(deviceId, records) {
         const longitude = latestRecord.positionLongitude !== undefined ? 
                         latestRecord.positionLongitude : latestRecord.longitude;
 
-        // Validate coordinates - don't save if both are 0
-        if (latitude === 0 && longitude === 0) {
-            console.log(`Skipping record with zero coordinates for device ${deviceId}`);
+        // Improved coordinate validation - only reject if both are exactly 0 or if they're invalid
+        if ((latitude === undefined || longitude === undefined) || 
+            isNaN(latitude) || isNaN(longitude) ||
+            (latitude === 0 && longitude === 0)) {
+            console.log(`Skipping record with invalid coordinates for device ${deviceId}: lat=${latitude}, lon=${longitude}`);
             return;
         }
 
@@ -356,8 +357,9 @@ async function processWalkTracking(deviceImei, record) {
         const lat = record.positionLatitude || record.latitude;
         const lon = record.positionLongitude || record.longitude;
 
-        if (!lat || !lon) {
-            console.error(`❌ Invalid coordinates for device ${deviceImei}`);
+        // Improved coordinate validation - only reject undefined, NaN, or exact 0,0 point
+        if (lat === undefined || lon === undefined || isNaN(lat) || isNaN(lon) || (lat === 0 && lon === 0)) {
+            console.error(`❌ Invalid coordinates for device ${deviceImei}: lat=${lat}, lon=${lon}`);
             return;
         }
 

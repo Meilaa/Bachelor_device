@@ -37,7 +37,6 @@ const server = net.createServer((socket) => {
     const reconnectAttempts = {};
     const MAX_RECONNECT_ATTEMPTS = 5;
 
-    // Define processBuffer function within socket scope
     const processBuffer = async () => {
         try {
             // Ensure dataBuffer is always initialized
@@ -45,9 +44,9 @@ const server = net.createServer((socket) => {
                 socket.dataBuffer = Buffer.alloc(0);
                 return;
             }
-
+    
+            // Don't process if the buffer is too small
             if (socket.dataBuffer.length < 2) return;
-
             // Check for IMEI packet
             if (isImeiPacket(socket.dataBuffer)) {
                 socket.deviceImei = parseImeiPacket(socket.dataBuffer);
@@ -202,11 +201,11 @@ const server = net.createServer((socket) => {
         try {
             socket.lastActivity = Date.now();
             clearTimeout(socket.timeoutHandler);
-
+    
             if (DEBUG_LOG) {
                 console.log(`📩 Received ${data.length} bytes from ${socket.deviceImei || 'new connection'} at ${new Date().toISOString()}`);
             }
-
+    
             // Ensure dataBuffer is always properly initialized
             if (!socket.dataBuffer) {
                 socket.dataBuffer = Buffer.alloc(0);
@@ -217,7 +216,7 @@ const server = net.createServer((socket) => {
             socket.dataBuffer = newBuffer;
             
             await processBuffer();
-
+    
             // Reset timeout
             socket.timeoutHandler = setTimeout(() => {
                 console.log(`⏱️ No data received from ${socket.deviceImei || 'unknown device'}`);
@@ -225,6 +224,7 @@ const server = net.createServer((socket) => {
             }, 60000);
         } catch (error) {
             console.error(`❌ Error processing data: ${error.message}`);
+            // Reset buffer to prevent further errors from corrupted data
             socket.dataBuffer = Buffer.alloc(0);
         }
     });
@@ -427,77 +427,107 @@ async function createWalkPathWithInitialPoints(deviceImei, points) {
 
 // Helper function to update WalkPath when movement is detected
 async function updateWalkPath(deviceId, latitude, longitude, timestamp) {
-    try {
-        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
-        if (!deviceInfo) {
-            console.error(`Cannot update walk path: Device ${deviceId} not found`);
-            return null;
-        }
+    let retries = 0;
+    
+    while (retries < RETRY_CONFIG.maxRetries) {
+        try {
+            // Validate inputs before proceeding
+            if (latitude === undefined || longitude === undefined || 
+                isNaN(latitude) || isNaN(longitude) ||
+                (latitude === 0 && longitude === 0)) {
+                console.error(`❌ Cannot update walk path: Invalid coordinates for device ${deviceId}: lat=${latitude}, lon=${longitude}`);
+                return null;
+            }
+            
+            // Ensure we have a connection
+            const connected = await ensureConnection();
+            if (!connected) {
+                console.error(`❌ Cannot update walk path: Database connection failed for device ${deviceId}`);
+                retries++;
+                await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.retryDelay));
+                continue;
+            }
+            
+            const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+            if (!deviceInfo) {
+                console.error(`Cannot update walk path: Device ${deviceId} not found`);
+                return null;
+            }
 
-        // First try to find an active walk path
-        let walkPath = await WalkPath.findOne({ 
-            device: deviceInfo._id, 
-            isActive: true 
-        });
-
-        if (!walkPath) {
-            console.log(`Creating new walk path for device ${deviceId}`);
-            // Create new walk path
-            walkPath = new WalkPath({
-                device: deviceInfo._id,
-                isActive: true,
-                startTime: timestamp,
-                coordinates: [{
-                    latitude,
-                    longitude,
-                    timestamp
-                }],
-                distance: 0,
-                duration: 0
+            // First try to find an active walk path
+            let walkPath = await WalkPath.findOne({ 
+                device: deviceInfo._id, 
+                isActive: true 
             });
 
-            await walkPath.save();
-            console.log(`✅ Created new walk path for device ${deviceId}`);
-            return walkPath;
-        }
+            if (!walkPath) {
+                console.log(`Creating new walk path for device ${deviceId}`);
+                // Create new walk path
+                walkPath = new WalkPath({
+                    device: deviceInfo._id,
+                    isActive: true,
+                    startTime: timestamp,
+                    coordinates: [{
+                        latitude,
+                        longitude,
+                        timestamp
+                    }],
+                    distance: 0,
+                    duration: 0
+                });
 
-        // Update existing walk path
-        walkPath.coordinates.push({
-            latitude,
-            longitude,
-            timestamp
-        });
-
-        // Calculate new distance
-        let totalDistance = 0;
-        if (walkPath.coordinates.length > 1) {
-            for (let i = 1; i < walkPath.coordinates.length; i++) {
-                const prev = walkPath.coordinates[i-1];
-                const curr = walkPath.coordinates[i];
-                totalDistance += calculateDistance(
-                    prev.latitude,
-                    prev.longitude,
-                    curr.latitude,
-                    curr.longitude
-                );
+                await walkPath.save();
+                console.log(`✅ Created new walk path for device ${deviceId}`);
+                return walkPath;
             }
+
+            // Update existing walk path
+            walkPath.coordinates.push({
+                latitude,
+                longitude,
+                timestamp
+            });
+
+            // Calculate new distance
+            let totalDistance = 0;
+            if (walkPath.coordinates.length > 1) {
+                for (let i = 1; i < walkPath.coordinates.length; i++) {
+                    const prev = walkPath.coordinates[i-1];
+                    const curr = walkPath.coordinates[i];
+                    totalDistance += calculateDistance(
+                        prev.latitude,
+                        prev.longitude,
+                        curr.latitude,
+                        curr.longitude
+                    );
+                }
+            }
+
+            // Update duration
+            const duration = Math.floor((timestamp - walkPath.startTime) / 1000);
+
+            // Update the walk path
+            walkPath.distance = Math.round(totalDistance);
+            walkPath.duration = duration;
+            walkPath.isActive = true;
+
+            await walkPath.save();
+            console.log(`✅ Updated walk path for device ${deviceId} with new point`);
+            return walkPath;
+        } catch (error) {
+            retries++;
+            if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+                console.log(`⚠️ Connection error for device ${deviceId} (attempt ${retries}/${RETRY_CONFIG.maxRetries})`);
+                if (retries < RETRY_CONFIG.maxRetries) {
+                    await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.retryDelay));
+                    continue;
+                }
+            }
+            console.error(`❌ Error updating walk path: ${error.message}`);
+            return null;
         }
-
-        // Update duration
-        const duration = Math.floor((timestamp - walkPath.startTime) / 1000);
-
-        // Update the walk path
-        walkPath.distance = Math.round(totalDistance);
-        walkPath.duration = duration;
-        walkPath.isActive = true;
-
-        await walkPath.save();
-        console.log(`✅ Updated walk path for device ${deviceId} with new point`);
-        return walkPath;
-    } catch (error) {
-        console.error(`❌ Error updating walk path: ${error.message}`);
-        return null;
     }
+    return null;
 }
 
 // Helper functions
