@@ -84,7 +84,8 @@ const server = net.createServer((socket) => {
                         isSaving: false,
                         pendingPoints: [], // Store points before DB saving starts
                         activeWalkPathId: null, // Track the active walk path ID
-                        walkPathFinished: false // Track if the current walk path is finished
+                        walkPathFinished: false, // Track if the current walk path is finished
+                        lastSpeed: 0
                     };
                 }
 
@@ -317,18 +318,12 @@ async function processWalkTracking(deviceImei, record) {
                 lastUpdate: Date.now(),
                 movementStartTime: null,
                 falseDuration: 0,
-                pendingPoints: [], // Store points before DB saving starts
-                activeWalkPathId: null, // Track the active walk path ID
-                walkPathFinished: false // Track if the current walk path is finished
+                pendingPoints: [],
+                activeWalkPathId: null,
+                walkPathFinished: false
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
-        }
-
-        // If walk path is finished and device is not moving, don't process any more points
-        if (deviceTracker.walkPathFinished && !record.movementStatus) {
-            console.log(`⏹️ Device ${deviceImei}: Walk path finished, ignoring stationary points`);
-            return;
         }
 
         // Update last point and timestamp
@@ -336,7 +331,6 @@ async function processWalkTracking(deviceImei, record) {
         deviceTracker.lastUpdate = Date.now();
 
         // Get movement status from the record
-        // Check both movementStatus and movement fields
         const isMoving = record.movementStatus === true || record.movement === true;
         
         console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
@@ -363,7 +357,7 @@ async function processWalkTracking(deviceImei, record) {
             
             // Check if we should start saving to DB (after 30 seconds of movement)
             const movementDuration = timestamp - deviceTracker.movementStartTime;
-            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 30 seconds threshold
+            if (movementDuration >= 30000 && !deviceTracker.isSaving) { // 30 seconds threshold
                 console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000)}s of movement`);
                 deviceTracker.isSaving = true;
                 
@@ -379,9 +373,7 @@ async function processWalkTracking(deviceImei, record) {
                     
                     if (result) {
                         console.log(`✅ Device ${deviceImei}: Created walk path with ${deviceTracker.pendingPoints.length} initial points`);
-                        // Store the walk path ID
                         deviceTracker.activeWalkPathId = result._id;
-                        // Clear pending points after successful save
                         deviceTracker.pendingPoints = [];
                     } else {
                         console.error(`❌ Device ${deviceImei}: Failed to create initial walk path`);
@@ -405,23 +397,14 @@ async function processWalkTracking(deviceImei, record) {
             }
             
             // Stop tracking if inactive for 1 minute
-            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 1 minute
+            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute
                 console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
                 
-                // Save any remaining pending points
-                if (deviceTracker.pendingPoints.length > 0) {
-                    const result = await saveWalkPath(
-                        deviceImei,
-                        deviceTracker.pendingPoints,
-                        false,
-                        deviceTracker.pendingPoints[0].timestamp,
-                        timestamp
-                    );
-                    
+                // Only save final points if we have an active walk path
+                if (deviceTracker.activeWalkPathId) {
+                    const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
                     if (result) {
-                        console.log(`✅ Device ${deviceImei}: Saved final walk path with ${deviceTracker.pendingPoints.length} points`);
-                    } else {
-                        console.error(`❌ Device ${deviceImei}: Failed to save final walk path`);
+                        console.log(`✅ Device ${deviceImei}: Updated final walk path with last point`);
                     }
                 }
                 
@@ -431,7 +414,7 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration = 0;
                 deviceTracker.pendingPoints = [];
                 deviceTracker.activeWalkPathId = null;
-                deviceTracker.walkPathFinished = true; // Mark the walk path as finished
+                deviceTracker.walkPathFinished = true;
                 
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
