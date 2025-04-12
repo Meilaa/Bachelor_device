@@ -170,6 +170,39 @@ async function getDeviceInfoByDeviceId(deviceId) {
     }
 }
 
+function determineMovementStatus(record) {
+    // Log the raw movement data for debugging
+    console.log('🔍 Movement check - Raw data:', {
+        movementStatus: record.movementStatus,
+        movement: record.movement,
+        speed: record.positionSpeed
+    });
+
+    // Explicit movement status takes highest priority
+    if (record.movementStatus !== undefined) {
+        console.log('🔍 Using movementStatus:', record.movementStatus);
+        return record.movementStatus;
+    }
+    
+    // Legacy 'movement' field
+    if (record.movement !== undefined) {
+        console.log('🔍 Using movement:', record.movement);
+        return record.movement;
+    }
+    
+    // Use speed to determine movement - consider moving if speed > 3 km/h
+    if (record.positionSpeed !== undefined) {
+        const isMoving = record.positionSpeed > 3;
+        console.log('🔍 Using speed:', record.positionSpeed, 'km/h, Moving:', isMoving);
+        return isMoving;
+    }
+    
+    // If no movement data is available, return null instead of false
+    console.log('⚠️ No movement data available');
+    return null;
+}
+
+// Function to save device data
 async function saveDeviceData(deviceId, records) {
     try {
         if (!records || records.length === 0) {
@@ -238,7 +271,7 @@ async function saveDeviceData(deviceId, records) {
             batteryLevel: latestRecord.batteryLevel || 0,
             deviceName: deviceDoc.name || deviceId,
             gnssStatus: latestRecord.gnssStatus,
-            movementStatus: movementStatus,
+            movementStatus: movementStatus,  // This can now be null
             positionAltitude: latestRecord.positionAltitude || latestRecord.altitude,
             positionDirection: latestRecord.positionDirection || latestRecord.angle,
             positionSpeed: latestRecord.positionSpeed || latestRecord.speed,
@@ -263,22 +296,6 @@ async function saveDeviceData(deviceId, records) {
         console.error('Error saving device data:', error);
         return null;
     }
-}
-
-function determineMovementStatus(record) {
-    // Explicit movement status takes highest priority
-    if (record.movementStatus !== undefined) return record.movementStatus;
-    
-    // Legacy 'movement' field
-    if (record.movement !== undefined) return record.movement;
-    
-    // Use speed to determine movement - consider moving if speed > 3 km/h
-    // Increasing threshold to avoid false positives
-    if (record.positionSpeed !== undefined) {
-        return record.positionSpeed > 3; // Using 3 km/h as threshold
-    }
-    
-    return false;
 }
 
 // Function to save walk path

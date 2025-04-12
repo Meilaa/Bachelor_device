@@ -151,12 +151,6 @@ const server = net.createServer((socket) => {
                                 if (newRecords.length > 0) {
                                     // Process each record for walk tracking
                                     for (const record of newRecords) {
-                                        // Calculate movement status directly based on speed for consistency
-                                        const movementStatus = record.positionSpeed > 3; // Using 3 km/h as threshold
-                                        
-                                        // Update the record with the calculated movement status
-                                        record.movementStatus = movementStatus;
-                                        
                                         await processWalkTracking(socket.deviceImei, record);
                                     }
                                     
