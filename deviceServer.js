@@ -325,15 +325,21 @@ async function processWalkTracking(deviceImei, record) {
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
         }
 
+        // If walk path is finished and device is not moving, don't process any more points
+        if (deviceTracker.walkPathFinished && !record.movementStatus) {
+            console.log(`⏹️ Device ${deviceImei}: Walk path finished, ignoring stationary points`);
+            return;
+        }
+
         // Update last point and timestamp
         deviceTracker.lastPoint = { lat, lon, timestamp };
         deviceTracker.lastUpdate = Date.now();
 
-        // Improved movement detection
-        const speed = record.positionSpeed || 0;
-        const isMoving = speed > 3; // Using 3 km/h as threshold
+        // Get movement status from the record
+        // Check both movementStatus and movement fields
+        const isMoving = record.movementStatus === true || record.movement === true;
         
-        console.log(`🔍 Device ${deviceImei}: Speed ${speed} km/h, Moving: ${isMoving}`);
+        console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
         
         if (isMoving) {
             // Reset false duration counter and walk path finished flag
@@ -355,10 +361,10 @@ async function processWalkTracking(deviceImei, record) {
             
             console.log(`📝 Device ${deviceImei}: Added point to pending points. Total pending points: ${deviceTracker.pendingPoints.length}`);
             
-            // Check if we should start saving to DB (after 5 minutes of movement)
+            // Check if we should start saving to DB (after 30 seconds of movement)
             const movementDuration = timestamp - deviceTracker.movementStartTime;
-            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 5 minutes = 300000 ms
-                console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000/60)} minutes of movement`);
+            if (movementDuration >= 300000 && !deviceTracker.isSaving) { // 30 seconds threshold
+                console.log(`🛣️ Device ${deviceImei}: Starting DB saving after ${Math.round(movementDuration/1000)}s of movement`);
                 deviceTracker.isSaving = true;
                 
                 // Save all pending points to DB
@@ -390,7 +396,7 @@ async function processWalkTracking(deviceImei, record) {
                     console.error(`❌ Device ${deviceImei}: Failed to update walk path`);
                 }
             } else {
-                console.log(`⏳ Device ${deviceImei}: Collecting points before DB saving starts. Movement duration: ${Math.round(movementDuration/1000/60)} minutes`);
+                console.log(`⏳ Device ${deviceImei}: Collecting points before DB saving starts. Movement duration: ${Math.round(movementDuration/1000)}s`);
             }
         } else {
             // Not moving - update falseDuration
@@ -398,9 +404,9 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
             }
             
-            // Stop tracking if inactive for 5 minutes
-            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 5 minutes = 300000 ms
-                console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000/60)} minutes idle`);
+            // Stop tracking if inactive for 1 minute
+            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 1 minute
+                console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
                 
                 // Save any remaining pending points
                 if (deviceTracker.pendingPoints.length > 0) {
@@ -430,10 +436,10 @@ async function processWalkTracking(deviceImei, record) {
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
             } else if (deviceTracker.movementStartTime) {
-                // If we were tracking movement but haven't reached 5 minutes yet, reset
+                // If we were tracking movement but haven't reached 30 seconds yet, reset
                 const movementDuration = timestamp - deviceTracker.movementStartTime;
-                if (movementDuration < 300000) {
-                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 5 minutes. Resetting tracking.`);
+                if (movementDuration < 30000) {
+                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 30 seconds. Resetting tracking.`);
                     deviceTracker.movementStartTime = null;
                     deviceTracker.pendingPoints = [];
                 }
