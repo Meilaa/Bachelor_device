@@ -27,7 +27,7 @@ const server = net.createServer((socket) => {
     const clientIP = socket.remoteAddress;
     
     // Initialize buffer and device tracking variables
-    let dataBuffer = Buffer.alloc(0);
+    let dataBuffer = Buffer.alloc(0); // Explicit initialization
     let deviceImei = null;
     let lastActivity = Date.now();
     let timeoutHandler = null;
@@ -39,13 +39,12 @@ const server = net.createServer((socket) => {
 
     // Define processBuffer function within socket scope
     const processBuffer = async () => {
+        // Ensure dataBuffer is always initialized
+        if (typeof dataBuffer === 'undefined') {
+            dataBuffer = Buffer.alloc(0);
+        }
+        
         try {
-            // Ensure dataBuffer is initialized
-            if (!dataBuffer) {
-                dataBuffer = Buffer.alloc(0);
-                return;
-            }
-            
             if (dataBuffer.length < 2) return;
 
             // Check for IMEI packet
@@ -207,8 +206,10 @@ const server = net.createServer((socket) => {
                 console.log(`📩 Received ${data.length} bytes from ${deviceImei || 'new connection'} at ${new Date().toISOString()}`);
             }
 
-            // Make sure dataBuffer is initialized
-            if (!dataBuffer) dataBuffer = Buffer.alloc(0);
+            // Ensure dataBuffer is always properly initialized
+            if (typeof dataBuffer === 'undefined') {
+                dataBuffer = Buffer.alloc(0);
+            }
             
             dataBuffer = Buffer.concat([dataBuffer, data]);
             await processBuffer();
@@ -285,7 +286,6 @@ const server = net.createServer((socket) => {
     });
 });
 
-// Helper function to process walk tracking
 // Improved walk tracking process with better error handling
 async function processWalkTracking(deviceImei, record) {
     try {
