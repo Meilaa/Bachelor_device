@@ -63,6 +63,31 @@ const RETRY_CONFIG = {
 let isConnected = false;
 let connectionRetries = 0;
 
+// Create a map to track device states within this module
+const deviceTrackers = new Map();
+
+// Helper function to close active walk paths
+async function closeActiveWalkPaths(deviceId) {
+    try {
+        const deviceInfo = await getDeviceInfoByDeviceId(deviceId);
+        if (!deviceInfo) return;
+        
+        const walkPaths = await WalkPath.find({
+            device: deviceInfo._id,
+            isActive: true
+        });
+        
+        for (const walkPath of walkPaths) {
+            walkPath.isActive = false;
+            walkPath.endTime = new Date();
+            await walkPath.save();
+            console.log(`✅ Closed walk path ${walkPath._id} for device ${deviceId}`);
+        }
+    } catch (error) {
+        console.error(`❌ Error closing walk paths: ${error.message}`);
+    }
+}
+
 // Function to connect to MongoDB with retry logic
 async function connectToDatabase() {
     try {
@@ -246,14 +271,12 @@ function determineMovementStatus(record) {
     // Legacy 'movement' field
     if (record.movement !== undefined) return record.movement;
     
-    // Use speed to determine movement - consider moving if speed > 0.5 km/h
+    // Use speed to determine movement - consider moving if speed > 3 km/h
+    // Increasing threshold to avoid false positives
     if (record.positionSpeed !== undefined) {
-        // Convert speed to km/h if needed (assuming speed is in m/s)
-        const speedKmh = record.positionSpeed * 3.6;
-        return speedKmh > 0.5;
+        return record.positionSpeed > 3; // Using 3 km/h as threshold
     }
     
-    // If no movement data at all, return false to indicate stationary
     return false;
 }
 
@@ -338,41 +361,84 @@ async function processWalkTracking(deviceImei, record) {
             return;
         }
 
-        // Get device tracker
-        let deviceTracker = activeDevices.get(deviceImei);
+        // Get device tracker from our local map
+        let deviceTracker = deviceTrackers.get(deviceImei);
         if (!deviceTracker) {
             deviceTracker = {
                 isSaving: false,
                 lastPoint: null,
-                lastUpdate: Date.now()
+                lastUpdate: Date.now(),
+                movementStartTime: null,
+                falseDuration: 0
             };
-            activeDevices.set(deviceImei, deviceTracker);
+            deviceTrackers.set(deviceImei, deviceTracker);
         }
 
         // Update last point and timestamp
         deviceTracker.lastPoint = { lat, lon, timestamp };
         deviceTracker.lastUpdate = Date.now();
 
-        // Check if device is moving
-        const movementStatus = determineMovementStatus(record);
-        if (movementStatus) {
+        // Check if device is moving - use our own logic here
+        const speed = record.positionSpeed || 0;
+        const isMoving = speed > 3; // Using 3 km/h as threshold
+        
+        console.log(`🔍 Device ${deviceImei}: Speed ${speed} km/h, Moving: ${isMoving}`);
+        
+        if (isMoving) {
+            // Reset false duration counter
+            deviceTracker.falseDuration = 0;
+            
+            // Set movement start time if not already set
+            if (!deviceTracker.movementStartTime) {
+                deviceTracker.movementStartTime = timestamp;
+                console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
+            }
+            
+            // Check if we should save or create a walk path
             if (!deviceTracker.isSaving) {
-                console.log(`🚶 Device ${deviceImei}: Started moving at ${timestamp.toLocaleTimeString()}`);
-                deviceTracker.isSaving = true;
-            }
-
-            // Save path data
-            console.log(`📍 Device ${deviceImei}: Adding point to walk path at ${timestamp.toLocaleTimeString()}`);
-            const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
-            if (result) {
-                console.log(`✅ Device ${deviceImei}: Updated walk path with new point`);
+                // Start saving after the movement has continued for some time
+                const movementDuration = timestamp - deviceTracker.movementStartTime;
+                if (movementDuration >= 30000) { // 30 seconds threshold
+                    console.log(`🛣️ Device ${deviceImei}: Starting walk path after ${Math.round(movementDuration/1000)}s of movement`);
+                    deviceTracker.isSaving = true;
+                    
+                    // Create a new walk path
+                    const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
+                    if (result) {
+                        console.log(`✅ Device ${deviceImei}: Created new walk path`);
+                    } else {
+                        console.error(`❌ Device ${deviceImei}: Failed to create walk path`);
+                    }
+                }
             } else {
-                console.error(`❌ Device ${deviceImei}: Failed to update walk path - null result returned`);
+                // Update existing walk path
+                const result = await updateWalkPath(deviceImei, lat, lon, timestamp);
+                if (result) {
+                    console.log(`✅ Device ${deviceImei}: Updated walk path`);
+                } else {
+                    console.error(`❌ Device ${deviceImei}: Failed to update walk path`);
+                }
             }
-        } else if (deviceTracker.isSaving) {
-            console.log(`🛑 Device ${deviceImei}: Stopped moving at ${timestamp.toLocaleTimeString()}`);
-            deviceTracker.isSaving = false;
+        } else {
+            // Not moving - update falseDuration
+            if (deviceTracker.lastMovement) {
+                deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
+            }
+            
+            // Stop tracking if inactive too long
+            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute
+                console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
+                deviceTracker.isSaving = false;
+                deviceTracker.movementStartTime = null;
+                deviceTracker.falseDuration = 0;
+                
+                // Close any active walk paths for this device
+                await closeActiveWalkPaths(deviceImei);
+            }
         }
+        
+        // Update last movement time
+        deviceTracker.lastMovement = timestamp;
     } catch (error) {
         console.error(`❌ Error in processWalkTracking for ${deviceImei}: ${error.message}`);
     }
