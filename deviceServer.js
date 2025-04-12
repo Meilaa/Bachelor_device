@@ -14,6 +14,13 @@ const DEVICE_PORT = 5005;
 const SOCKET_TIMEOUT = 300000; // 5 minutes
 const DEBUG_LOG = true;
 
+// Retry configuration for database operations
+const RETRY_CONFIG = {
+    maxRetries: 3,
+    retryDelay: 1000, // 1 second
+    timeout: 5000 // 5 seconds
+};
+
 // Track server start time
 const SERVER_START_TIME = Date.now();
 
