@@ -78,14 +78,15 @@ const server = net.createServer((socket) => {
                 // Initialize movement tracker for this device
                 if (!movementTracker[socket.deviceImei]) {
                     movementTracker[socket.deviceImei] = {
-                        lastMovement: new Date(),
+                        isSaving: false,
+                        lastPoint: null,
+                        lastUpdate: Date.now(),
                         movementStartTime: null,
                         falseDuration: 0,
-                        isSaving: false,
                         pendingPoints: [], // Store points before DB saving starts
                         activeWalkPathId: null, // Track the active walk path ID
                         walkPathFinished: false, // Track if the current walk path is finished
-                        lastSpeed: 0
+                        lastMovementState: false
                     };
                 }
 
@@ -320,7 +321,8 @@ async function processWalkTracking(deviceImei, record) {
                 falseDuration: 0,
                 pendingPoints: [],
                 activeWalkPathId: null,
-                walkPathFinished: false
+                walkPathFinished: false,
+                lastMovementState: false
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
@@ -335,17 +337,26 @@ async function processWalkTracking(deviceImei, record) {
         
         console.log(`🔍 Device ${deviceImei}: Movement Status: ${isMoving}, Raw Status: ${record.movementStatus}, Raw Movement: ${record.movement}`);
         
-        if (isMoving) {
-            // Reset false duration counter and walk path finished flag
-            deviceTracker.falseDuration = 0;
-            deviceTracker.walkPathFinished = false;
+        // Check for movement state change
+        if (isMoving !== deviceTracker.lastMovementState) {
+            console.log(`🔄 Device ${deviceImei}: Movement state changed from ${deviceTracker.lastMovementState} to ${isMoving}`);
+            deviceTracker.lastMovementState = isMoving;
             
-            // Set movement start time if not already set
-            if (!deviceTracker.movementStartTime) {
+            if (!isMoving) {
+                // Movement stopped - start counting false duration
+                deviceTracker.falseDuration = 0;
+                deviceTracker.lastMovement = timestamp;
+            } else {
+                // Movement started - reset tracking
                 deviceTracker.movementStartTime = timestamp;
+                deviceTracker.pendingPoints = [];
+                deviceTracker.falseDuration = 0;
+                deviceTracker.walkPathFinished = false;
                 console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
             }
-            
+        }
+        
+        if (isMoving) {
             // Add point to pending points array
             deviceTracker.pendingPoints.push({
                 latitude: lat,
