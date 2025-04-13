@@ -86,7 +86,8 @@ const server = net.createServer((socket) => {
                         pendingPoints: [], // Store points before DB saving starts
                         activeWalkPathId: null, // Track the active walk path ID
                         walkPathFinished: false, // Track if the current walk path is finished
-                        lastMovementState: false
+                        lastMovementState: false,
+                        lastStopTime: null
                     };
                 }
 
@@ -322,7 +323,8 @@ async function processWalkTracking(deviceImei, record) {
                 pendingPoints: [],
                 activeWalkPathId: null,
                 walkPathFinished: false,
-                lastMovementState: false
+                lastMovementState: false,
+                lastStopTime: null
             };
             movementTracker[deviceImei] = deviceTracker;
             console.log(`🆕 Initialized movement tracker for device ${deviceImei}`);
@@ -343,16 +345,28 @@ async function processWalkTracking(deviceImei, record) {
             deviceTracker.lastMovementState = isMoving;
             
             if (!isMoving) {
-                // Movement stopped - start counting false duration
+                // Movement stopped - start counting false duration and record stop time
                 deviceTracker.falseDuration = 0;
                 deviceTracker.lastMovement = timestamp;
+                deviceTracker.lastStopTime = timestamp;
             } else {
-                // Movement started - reset tracking
-                deviceTracker.movementStartTime = timestamp;
-                deviceTracker.pendingPoints = [];
-                deviceTracker.falseDuration = 0;
-                deviceTracker.walkPathFinished = false;
-                console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
+                // Movement started - check if we should continue existing path
+                const timeSinceLastStop = deviceTracker.lastStopTime ? 
+                    timestamp - deviceTracker.lastStopTime : 
+                    Infinity;
+                
+                if (timeSinceLastStop <= 300000 && deviceTracker.movementStartTime) { // 5 minutes window
+                    console.log(`🔄 Device ${deviceImei}: Movement resumed within 5 minutes, continuing existing path`);
+                    deviceTracker.falseDuration = 0;
+                    deviceTracker.walkPathFinished = false;
+                } else {
+                    // Start new tracking
+                    deviceTracker.movementStartTime = timestamp;
+                    deviceTracker.pendingPoints = [];
+                    deviceTracker.falseDuration = 0;
+                    deviceTracker.walkPathFinished = false;
+                    console.log(`🚶‍♂️ Device ${deviceImei}: Movement started at ${timestamp.toLocaleTimeString()}`);
+                }
             }
         }
         
@@ -407,8 +421,8 @@ async function processWalkTracking(deviceImei, record) {
                 deviceTracker.falseDuration += timestamp - deviceTracker.lastMovement;
             }
             
-            // Stop tracking if inactive for 1 minute
-            if (deviceTracker.falseDuration >= 60000 && deviceTracker.isSaving) { // 1 minute
+            // Stop tracking if inactive for 5 minutes
+            if (deviceTracker.falseDuration >= 300000 && deviceTracker.isSaving) { // 5 minutes
                 console.log(`🛑 Device ${deviceImei}: Stopped tracking after ${Math.round(deviceTracker.falseDuration/1000)}s idle`);
                 
                 // Only save final points if we have an active walk path
@@ -430,12 +444,10 @@ async function processWalkTracking(deviceImei, record) {
                 // Close any active walk paths for this device
                 await closeActiveWalkPaths(deviceImei);
             } else if (deviceTracker.movementStartTime) {
-                // If we were tracking movement but haven't reached 5 minutes yet, reset
+                // If we were tracking movement but haven't reached 5 minutes yet, keep points
                 const movementDuration = timestamp - deviceTracker.movementStartTime;
                 if (movementDuration < 300000) {
-                    console.log(`🔄 Device ${deviceImei}: Movement stopped before 5 minutes. Resetting tracking.`);
-                    deviceTracker.movementStartTime = null;
-                    deviceTracker.pendingPoints = [];
+                    console.log(`⏳ Device ${deviceImei}: Movement paused before 5 minutes. Keeping points for potential resumption.`);
                 }
             }
         }
